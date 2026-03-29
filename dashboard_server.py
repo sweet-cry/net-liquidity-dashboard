@@ -232,16 +232,28 @@ def fetch_series(series_id, start, frequency="d"):
     return s
 
 
+def fetch_auto(series_id, start, preferred="d"):
+    for freq in [preferred, "w", "bw", "m"]:
+        try:
+            s = fetch_series(series_id, start, frequency=freq)
+            if len(s) > 0:
+                print(f"  [{series_id}] frequency={freq} 사용")
+                return s, freq
+        except Exception:
+            continue
+    raise ValueError(f"{series_id}: 사용 가능한 frequency 없음")
+
+
 def build_data():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL (주간)...")
     walcl_w = fetch_series("WALCL", START_DATE, frequency="w")
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL (일간)...")
-    tga_d = fetch_series("WDTGAL", START_DATE, frequency="d")
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD (일간)...")
-    rrp_d = fetch_series("RRPONTSYD", START_DATE, frequency="d")
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500 (일간)...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL...")
+    tga_d, tga_freq = fetch_auto("WDTGAL", START_DATE, preferred="d")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD...")
+    rrp_d, rrp_freq = fetch_auto("RRPONTSYD", START_DATE, preferred="d")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500...")
     try:
-        spx_d = fetch_series("SP500", START_DATE, frequency="d")
+        spx_d, _ = fetch_auto("SP500", START_DATE, preferred="d")
     except Exception:
         spx_d = pd.Series(dtype=float, name="SP500")
 
