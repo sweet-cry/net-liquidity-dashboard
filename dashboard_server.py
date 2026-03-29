@@ -2,12 +2,18 @@
 Net Liquidity Dashboard (Railway 배포용)
 ========================================
 환경변수:
-  FRED_API_KEY  : FRED API Key (필수)
-  FEPS          : Forward EPS (기본 270)
-  FPE           : Forward P/E (기본 21)
+  FRED_API_KEY     : FRED API Key (필수)
+  FEPS             : Forward EPS (기본 270)
+  FPE              : Forward P/E (기본 21)
   REFRESH_INTERVAL : 갱신 주기 초 (기본 3600)
-  START_DATE    : 시작일 (기본 2000-01-01)
-  PORT          : Railway 자동 설정
+  START_DATE       : 시작일 (기본 2000-01-01)
+  PORT             : Railway 자동 설정
+
+각 시리즈 업데이트 주기:
+  WALCL      : 주간 (매주 목요일)
+  WDTGAL     : 일간
+  RRPONTSYD  : 일간
+  SP500      : 일간
 """
 
 import os
@@ -74,6 +80,7 @@ HTML_TEMPLATE = """
     .summary-box .lbl{color:#666;}
     .summary-box .val{font-weight:700;color:#111;}
     .divider{border:none;border-top:2px solid #cc0000;margin:4px 0 10px;}
+    .freq-note{font-size:10px;color:#999;margin-bottom:12px;padding-left:2px;}
     .error{background:#fff0f0;border:1px solid #cc0000;border-radius:2px;padding:14px;color:#cc0000;margin-bottom:12px;font-size:13px;}
     .loading{text-align:center;padding:80px;color:#888;font-size:14px;}
     .loading p{margin-top:10px;font-size:12px;}
@@ -122,7 +129,7 @@ HTML_TEMPLATE = """
     <div class="mc">
       <div class="mc-lbl">Net Liquidity</div>
       <div class="mc-val">{{ summary.nl }}</div>
-      <div class="mc-sub {{ 'pos' if summary.nl_wow_pos else 'neg' }}">{{ summary.nl_wow }}</div>
+      <div class="mc-sub {{ 'pos' if summary.nl_chg_pos else 'neg' }}">{{ summary.nl_chg }}</div>
     </div>
     <div class="mc">
       <div class="mc-lbl">NL Regression FV</div>
@@ -135,19 +142,19 @@ HTML_TEMPLATE = """
       <div class="mc-sub {{ 'pos' if summary.fv_pe_cheap else ('neg' if summary.fv_pe_cheap is not none else 'neu') }}">{{ summary.fv_pe_gap }}</div>
     </div>
     <div class="mc">
-      <div class="mc-lbl">WALCL</div>
+      <div class="mc-lbl">WALCL <span style="font-weight:400;color:#bbb;">주간</span></div>
       <div class="mc-val">{{ summary.walcl }}</div>
-      <div class="mc-sub neu">Fed Total Assets</div>
+      <div class="mc-sub neu">{{ summary.walcl_date }}</div>
     </div>
     <div class="mc">
-      <div class="mc-lbl">TGA</div>
+      <div class="mc-lbl">TGA <span style="font-weight:400;color:#bbb;">일간</span></div>
       <div class="mc-val">{{ summary.tga }}</div>
-      <div class="mc-sub neu">Treasury Cash</div>
+      <div class="mc-sub neu">{{ summary.tga_date }}</div>
     </div>
     <div class="mc">
-      <div class="mc-lbl">RRP</div>
+      <div class="mc-lbl">RRP <span style="font-weight:400;color:#bbb;">일간</span></div>
       <div class="mc-val">{{ summary.rrp }}</div>
-      <div class="mc-sub neu">Reverse Repo</div>
+      <div class="mc-sub neu">{{ summary.rrp_date }}</div>
     </div>
   </div>
 
@@ -155,11 +162,11 @@ HTML_TEMPLATE = """
 
   <div class="section-title">요약</div>
   <div class="summary-box">
-    <div class="row"><span class="lbl">기준일</span><span class="val">{{ summary.base_date }}</span></div>
-    <div class="row"><span class="lbl">WALCL</span><span class="val">{{ summary.walcl_raw }}</span></div>
-    <div class="row"><span class="lbl">TGA</span><span class="val">{{ summary.tga_raw }}</span></div>
-    <div class="row"><span class="lbl">RRP</span><span class="val">{{ summary.rrp_raw }}</span></div>
-    <div class="row"><span class="lbl">Net Liquidity</span><span class="val {{ 'pos' if summary.nl_wow_pos else 'neg' }}">{{ summary.nl_raw }} &nbsp;({{ summary.nl_wow }})</span></div>
+    <div class="row"><span class="lbl">기준일 (NL)</span><span class="val">{{ summary.base_date }}</span></div>
+    <div class="row"><span class="lbl">WALCL ({{ summary.walcl_date }})</span><span class="val">{{ summary.walcl_raw }}</span></div>
+    <div class="row"><span class="lbl">TGA ({{ summary.tga_date }})</span><span class="val">{{ summary.tga_raw }}</span></div>
+    <div class="row"><span class="lbl">RRP ({{ summary.rrp_date }})</span><span class="val">{{ summary.rrp_raw }}</span></div>
+    <div class="row"><span class="lbl">Net Liquidity</span><span class="val {{ 'pos' if summary.nl_chg_pos else 'neg' }}">{{ summary.nl_raw }} &nbsp;({{ summary.nl_chg }})</span></div>
     <hr class="divider">
     <div class="row"><span class="lbl">NL 회귀 공정가치</span><span class="val">{{ summary.fv_nl }}</span></div>
     <div class="row"><span class="lbl">SPX 현재가 (NL 기준)</span><span class="val {{ 'pos' if summary.fv_nl_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_nl_gap }})</span></div>
@@ -167,7 +174,8 @@ HTML_TEMPLATE = """
     <div class="row"><span class="lbl">SPX 현재가 (P/E 기준)</span><span class="val {{ 'pos' if summary.fv_pe_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_pe_gap }})</span></div>
   </div>
 
-  <div class="section-title">최근 10개월 데이터</div>
+  <div class="section-title">최근 30일 데이터</div>
+  <div class="freq-note">WALCL: 주간 | TGA·RRP·SP500: 일간 | NL = WALCL(최근값 유지) - TGA - RRP</div>
   <div class="tbl-wrap">
     <table>
       <thead>
@@ -177,7 +185,7 @@ HTML_TEMPLATE = """
           <th>TGA (B)</th>
           <th>RRP (B)</th>
           <th>Net Liq (B)</th>
-          <th>MoM</th>
+          <th>DoD</th>
           <th>SP500</th>
           <th>NL FV</th>
           <th>괴리율</th>
@@ -191,7 +199,7 @@ HTML_TEMPLATE = """
           <td>{{ row.tga }}</td>
           <td>{{ row.rrp }}</td>
           <td><strong>{{ row.nl }}</strong></td>
-          <td>{% if row.mom_pos is not none %}<span class="{{ 'badge-up' if row.mom_pos else 'badge-dn' }}">{{ row.mom }}</span>{% else %}—{% endif %}</td>
+          <td>{% if row.dod_pos is not none %}<span class="{{ 'badge-up' if row.dod_pos else 'badge-dn' }}">{{ row.dod }}</span>{% else %}—{% endif %}</td>
           <td>{{ row.spx }}</td>
           <td>{{ row.fv_nl }}</td>
           <td>{% if row.gap is not none %}<span class="{{ 'badge-up' if row.gap_pos else 'badge-dn' }}">{{ row.gap }}</span>{% else %}—{% endif %}</td>
@@ -203,7 +211,7 @@ HTML_TEMPLATE = """
 
 {% endif %}
   <div class="footer">
-    Source: Federal Reserve Bank of St. Louis (FRED) &nbsp;|&nbsp; WALCL · WDTGAL · RRPONTSYD · SP500 &nbsp;|&nbsp; 2000–present
+    Source: Federal Reserve Bank of St. Louis (FRED) &nbsp;|&nbsp; WALCL(주간) · WDTGAL(일간) · RRPONTSYD(일간) · SP500(일간) &nbsp;|&nbsp; 2000–present
   </div>
 </div>
 </body>
@@ -211,7 +219,7 @@ HTML_TEMPLATE = """
 """
 
 
-def fetch_series(series_id, start, frequency="m"):
+def fetch_series(series_id, start, frequency="d"):
     params = dict(series_id=series_id, api_key=API_KEY, file_type="json",
                   observation_start=start, frequency=frequency)
     r = req.get(FRED_BASE, params=params, timeout=30)
@@ -227,47 +235,49 @@ def fetch_series(series_id, start, frequency="m"):
     return s
 
 
-def fetch_auto(series_id, start):
-    for freq in ["m", "w", "d"]:
-        try:
-            s = fetch_series(series_id, start, freq)
-            if len(s) > 0:
-                if freq in ["d", "w"]:
-                    s = s.resample("MS").last().dropna()
-                return s
-        except Exception:
-            continue
-    raise ValueError(f"{series_id}: 모든 frequency 실패")
-
-
 def build_data():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL..."); walcl = fetch_auto("WALCL", START_DATE)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL..."); tga = fetch_auto("WDTGAL", START_DATE)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD..."); rrp = fetch_auto("RRPONTSYD", START_DATE)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL (주간)...")
+    walcl = fetch_series("WALCL", START_DATE, frequency="w")
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL (일간)...")
+    tga = fetch_series("WDTGAL", START_DATE, frequency="d")
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD (일간)...")
+    rrp = fetch_series("RRPONTSYD", START_DATE, frequency="d")
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500 (일간)...")
     try:
-        spx = fetch_auto("SP500", START_DATE)
+        spx = fetch_series("SP500", START_DATE, frequency="d")
     except Exception:
         spx = pd.Series(dtype=float, name="SP500")
 
-    df = pd.DataFrame({"WALCL": walcl, "TGA": tga, "RRP": rrp, "SP500": spx}).sort_index()
-    df[["WALCL", "TGA", "RRP"]] = df[["WALCL", "TGA", "RRP"]].ffill()
-    df = df.dropna(subset=["WALCL", "TGA", "RRP"])
+    # 일간 기준 DataFrame, WALCL은 forward fill (주간이므로)
+    df = pd.DataFrame({"TGA": tga, "RRP": rrp, "SP500": spx}).sort_index()
+    walcl_daily = walcl.reindex(df.index, method="ffill")
+    df["WALCL"] = walcl_daily
+    df = df.dropna(subset=["TGA", "RRP", "WALCL"])
     df["NL"] = df["WALCL"] - df["TGA"] - df["RRP"]
-    df["NL_MoM"] = df["NL"].diff()
+    df["NL_DoD"] = df["NL"].diff()
 
-    valid = df[["NL", "SP500"]].dropna()
+    # 차트용 월간 리샘플 (2000년~ 장기차트)
+    df_monthly = df.resample("MS").last().dropna(subset=["WALCL", "TGA", "RRP"])
+    df_monthly["NL"] = df_monthly["WALCL"] - df_monthly["TGA"] - df_monthly["RRP"]
+
+    # 회귀는 월간으로
+    valid = df_monthly[["NL", "SP500"]].dropna()
     if len(valid) >= 10:
         x, y = valid["NL"].values, valid["SP500"].values
         slope, intercept = np.polyfit(x, y, 1)
         r2 = np.corrcoef(x, y)[0, 1] ** 2
         print(f"  회귀 R²={r2:.3f}")
+        df_monthly["FV_NL"] = slope * df_monthly["NL"] + intercept
         df["FV_NL"] = slope * df["NL"] + intercept
     else:
+        df_monthly["FV_NL"] = np.nan
         df["FV_NL"] = np.nan
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: {len(df)}개")
-    return df
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: 일간 {len(df)}개 / 월간 {len(df_monthly)}개")
+    return df, df_monthly
 
 
 def fmt_val(v):
@@ -276,19 +286,17 @@ def fmt_val(v):
     return f"{v:,.0f}B"
 
 
-def fmt_num(v):
-    if pd.isna(v):
-        return "—"
-    return f"{v:,.0f}"
-
-
 def build_summary(df):
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else None
     fv_pe = FEPS * FPE
     spx = latest["SP500"] if not pd.isna(latest["SP500"]) else None
     fv_nl = latest["FV_NL"] if "FV_NL" in latest.index and not pd.isna(latest["FV_NL"]) else None
-    wow = latest["NL"] - prev["NL"] if prev is not None else 0
+    chg = latest["NL"] - prev["NL"] if prev is not None else 0
+
+    walcl_date = df["WALCL"].last_valid_index()
+    tga_date   = df["TGA"].last_valid_index()
+    rrp_date   = df["RRP"].last_valid_index()
 
     fv_nl_gap = fv_nl_cheap = None
     if fv_nl and spx:
@@ -305,10 +313,13 @@ def build_summary(df):
     return {
         "base_date": df.index[-1].strftime("%Y-%m-%d"),
         "nl": fmt_val(latest["NL"]), "nl_raw": f"{latest['NL']:,.0f}B",
-        "nl_wow": f"{'▲' if wow>=0 else '▼'} {fmt_val(abs(wow))} MoM", "nl_wow_pos": wow >= 0,
+        "nl_chg": f"{'▲' if chg>=0 else '▼'} {fmt_val(abs(chg))} DoD", "nl_chg_pos": chg >= 0,
         "walcl": fmt_val(latest["WALCL"]), "walcl_raw": f"{latest['WALCL']:,.0f}B",
+        "walcl_date": walcl_date.strftime("%m-%d") if walcl_date else "—",
         "tga": fmt_val(latest["TGA"]), "tga_raw": f"{latest['TGA']:,.0f}B",
+        "tga_date": tga_date.strftime("%m-%d") if tga_date else "—",
         "rrp": fmt_val(latest["RRP"]), "rrp_raw": f"{latest['RRP']:,.0f}B",
+        "rrp_date": rrp_date.strftime("%m-%d") if rrp_date else "—",
         "spx_raw": f"{spx:,.0f}" if spx else "—",
         "fv_nl": f"{fv_nl:,.0f}" if fv_nl else "—",
         "fv_nl_gap": fv_nl_gap or "데이터 부족", "fv_nl_cheap": fv_nl_cheap,
@@ -318,26 +329,25 @@ def build_summary(df):
 
 def build_table_rows(df):
     rows = []
-    tail = df.tail(10).copy()
+    tail = df.tail(30).copy()
     for i, (date, row) in enumerate(tail.iterrows()):
         prev_nl = tail.iloc[i-1]["NL"] if i > 0 else None
-        mom = row["NL"] - prev_nl if prev_nl is not None else None
+        dod = row["NL"] - prev_nl if prev_nl is not None else None
         spx = row["SP500"] if not pd.isna(row["SP500"]) else None
         fv_nl = row["FV_NL"] if "FV_NL" in row.index and not pd.isna(row["FV_NL"]) else None
-        gap = None
-        gap_pos = None
+        gap = gap_pos = None
         if spx and fv_nl:
             g = (spx - fv_nl) / fv_nl * 100
             gap = f"{'+' if g>0 else ''}{g:.1f}%"
             gap_pos = g < 0
         rows.append({
-            "date": date.strftime("%Y-%m"),
+            "date": date.strftime("%Y-%m-%d"),
             "walcl": f"{row['WALCL']:,.0f}",
             "tga": f"{row['TGA']:,.0f}",
             "rrp": f"{row['RRP']:,.0f}",
             "nl": f"{row['NL']:,.0f}",
-            "mom": f"{'▲' if mom>=0 else '▼'}{abs(mom):,.0f}" if mom is not None else "—",
-            "mom_pos": mom >= 0 if mom is not None else None,
+            "dod": f"{'▲' if dod>=0 else '▼'}{abs(dod):,.0f}" if dod is not None else "—",
+            "dod_pos": dod >= 0 if dod is not None else None,
             "spx": f"{spx:,.0f}" if spx else "—",
             "fv_nl": f"{fv_nl:,.0f}" if fv_nl else "—",
             "gap": gap, "gap_pos": gap_pos,
@@ -345,7 +355,7 @@ def build_table_rows(df):
     return list(reversed(rows))
 
 
-def build_chart(df):
+def build_chart(df_monthly):
     fv_pe = FEPS * FPE
     recession_periods = [("2001-03-01","2001-11-01"),("2007-12-01","2009-06-01"),("2020-02-01","2020-04-01")]
 
@@ -358,27 +368,27 @@ def build_chart(df):
         for row in [1, 2]:
             fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)", layer="below", line_width=0, row=row, col=1)
 
-    fig.add_trace(go.Scatter(x=df.index, y=df["NL"], name="Net Liquidity",
+    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["NL"], name="Net Liquidity",
         line=dict(color="#1f77b4", width=2.5), fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"),
         row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=df.index, y=df["TGA"], name="TGA",
+    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["TGA"], name="TGA",
         line=dict(color="#2ca02c", width=1.5, dash="dash")), row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=df.index, y=df["RRP"], name="RRP",
+    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["RRP"], name="RRP",
         line=dict(color="#ff7f0e", width=1.5, dash="dash")), row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=df.index, y=df["WALCL"], name="WALCL (우축)",
+    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["WALCL"], name="WALCL (우축)",
         line=dict(color="#d62728", width=1.5, dash="dot")), row=1, col=1, secondary_y=True)
-    fig.add_trace(go.Scatter(x=df.index, y=df["SP500"], name="S&P 500",
+    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["SP500"], name="S&P 500",
         line=dict(color="#333333", width=2)), row=2, col=1)
-    if "FV_NL" in df.columns and df["FV_NL"].notna().any():
-        fig.add_trace(go.Scatter(x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
+    if "FV_NL" in df_monthly.columns and df_monthly["FV_NL"].notna().any():
+        fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["FV_NL"], name="NL 회귀 FV",
             line=dict(color="#1f77b4", width=1.5)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=[fv_pe]*len(df), name=f"P/E×EPS FV ({fv_pe:,.0f})",
+    fig.add_trace(go.Scatter(x=df_monthly.index, y=[fv_pe]*len(df_monthly), name=f"P/E×EPS FV ({fv_pe:,.0f})",
         line=dict(color="#d62728", width=1.5, dash="dash")), row=2, col=1)
 
     grid = dict(showgrid=True, gridcolor="rgba(204,0,0,0.15)", gridwidth=0.5, griddash="dot",
                 linecolor="#bbb", linewidth=1, showline=True, ticks="outside", tickcolor="#bbb",
                 tickfont=dict(size=10, color="#555"))
-    spx_vals = df["SP500"].dropna()
+    spx_vals = df_monthly["SP500"].dropna()
     spx_min = int(spx_vals.min() * 0.9) if len(spx_vals) else 500
     spx_max = int(spx_vals.max() * 1.05) if len(spx_vals) else 7500
 
@@ -402,9 +412,9 @@ def build_chart(df):
 def refresh_data():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 갱신 시작...")
     try:
-        df = build_data()
+        df, df_monthly = build_data()
         cache["summary"] = build_summary(df)
-        cache["chart_html"] = build_chart(df)
+        cache["chart_html"] = build_chart(df_monthly)
         cache["table_rows"] = build_table_rows(df)
         cache["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cache["error"] = None
