@@ -8,6 +8,11 @@ Net Liquidity Dashboard (Railway 배포용)
   REFRESH_INTERVAL : 갱신 주기 초 (기본 3600)
   START_DATE       : 시작일 (기본 2000-01-01)
   PORT             : Railway 자동 설정
+
+차트 업데이트 주기:
+  NL  = WALCL(주간 ffill) - TGA(일간) - RRP(일간) → 일간
+  차트1: NL · TGA · RRP (일간)
+  차트2: SPX · NL회귀FV · P/E×EPS FV (일간)
 """
 
 import os
@@ -230,45 +235,36 @@ def fetch_series(series_id, start, frequency="d"):
 def build_data():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL (주간)...")
     walcl_w = fetch_series("WALCL", START_DATE, frequency="w")
-
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL (일간)...")
     tga_d = fetch_series("WDTGAL", START_DATE, frequency="d")
-
     print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD (일간)...")
     rrp_d = fetch_series("RRPONTSYD", START_DATE, frequency="d")
-
     print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500 (일간)...")
     try:
         spx_d = fetch_series("SP500", START_DATE, frequency="d")
     except Exception:
         spx_d = pd.Series(dtype=float, name="SP500")
 
-    # 일간 DataFrame (요약+테이블용)
-    df_daily = pd.DataFrame({"TGA": tga_d, "RRP": rrp_d, "SP500": spx_d}).sort_index()
-    df_daily["WALCL"] = walcl_w.reindex(df_daily.index, method="ffill")
-    df_daily = df_daily.dropna(subset=["TGA", "RRP", "WALCL"])
-    df_daily["NL"] = df_daily["WALCL"] - df_daily["TGA"] - df_daily["RRP"]
-    df_daily["NL_DoD"] = df_daily["NL"].diff()
+    # 일간 기준 병합
+    df = pd.DataFrame({"TGA": tga_d, "RRP": rrp_d, "SP500": spx_d}).sort_index()
+    df["WALCL"] = walcl_w.reindex(df.index, method="ffill")
+    df = df.dropna(subset=["TGA", "RRP", "WALCL"])
+    df["NL"] = df["WALCL"] - df["TGA"] - df["RRP"]
+    df["NL_DoD"] = df["NL"].diff()
 
-    # 월간 DataFrame (차트용)
-    df_monthly = df_daily.resample("MS").last().dropna(subset=["WALCL", "TGA", "RRP"])
-    df_monthly["NL"] = df_monthly["WALCL"] - df_monthly["TGA"] - df_monthly["RRP"]
-
-    # 회귀 (월간 기준)
-    valid = df_monthly[["NL", "SP500"]].dropna()
+    # 회귀 (전체 일간 기준)
+    valid = df[["NL", "SP500"]].dropna()
     if len(valid) >= 10:
         x, y = valid["NL"].values, valid["SP500"].values
         slope, intercept = np.polyfit(x, y, 1)
         r2 = np.corrcoef(x, y)[0, 1] ** 2
         print(f"  회귀 R²={r2:.3f}")
-        df_monthly["FV_NL"] = slope * df_monthly["NL"] + intercept
-        df_daily["FV_NL"] = slope * df_daily["NL"] + intercept
+        df["FV_NL"] = slope * df["NL"] + intercept
     else:
-        df_monthly["FV_NL"] = np.nan
-        df_daily["FV_NL"] = np.nan
+        df["FV_NL"] = np.nan
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: 일간 {len(df_daily)}개 / 월간 {len(df_monthly)}개")
-    return df_daily, df_monthly
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: {len(df)}개 포인트")
+    return df
 
 
 def fmt_val(v):
@@ -277,17 +273,17 @@ def fmt_val(v):
     return f"{v:,.0f}B"
 
 
-def build_summary(df_daily):
-    latest = df_daily.iloc[-1]
-    prev = df_daily.iloc[-2] if len(df_daily) > 1 else None
+def build_summary(df):
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else None
     fv_pe = FEPS * FPE
     spx = latest["SP500"] if not pd.isna(latest["SP500"]) else None
     fv_nl = latest["FV_NL"] if "FV_NL" in latest.index and not pd.isna(latest["FV_NL"]) else None
     chg = latest["NL"] - prev["NL"] if prev is not None else 0
 
-    walcl_date = df_daily["WALCL"].last_valid_index()
-    tga_date   = df_daily["TGA"].last_valid_index()
-    rrp_date   = df_daily["RRP"].last_valid_index()
+    walcl_date = df["WALCL"].last_valid_index()
+    tga_date   = df["TGA"].last_valid_index()
+    rrp_date   = df["RRP"].last_valid_index()
 
     fv_nl_gap = fv_nl_cheap = None
     if fv_nl and spx:
@@ -302,7 +298,7 @@ def build_summary(df_daily):
         fv_pe_cheap = gap2 < 0
 
     return {
-        "base_date": df_daily.index[-1].strftime("%Y-%m-%d"),
+        "base_date": df.index[-1].strftime("%Y-%m-%d"),
         "nl": fmt_val(latest["NL"]), "nl_raw": f"{latest['NL']:,.0f}B",
         "nl_chg": f"{'▲' if chg>=0 else '▼'} {fmt_val(abs(chg))} DoD", "nl_chg_pos": chg >= 0,
         "walcl": fmt_val(latest["WALCL"]), "walcl_raw": f"{latest['WALCL']:,.0f}B",
@@ -318,9 +314,9 @@ def build_summary(df_daily):
     }
 
 
-def build_table_rows(df_daily):
+def build_table_rows(df):
+    tail = df.tail(11).copy()
     rows = []
-    tail = df_daily.tail(11).copy()  # 11개 가져와서 DoD 계산 후 10개 표시
     for i, (date, row) in enumerate(tail.iterrows()):
         prev_nl = tail.iloc[i-1]["NL"] if i > 0 else None
         dod = row["NL"] - prev_nl if prev_nl is not None else None
@@ -346,54 +342,62 @@ def build_table_rows(df_daily):
     return list(reversed(rows[-10:]))
 
 
-def build_chart(df_monthly):
+def build_chart(df):
     fv_pe = FEPS * FPE
-    recession_periods = [("2001-03-01","2001-11-01"),("2007-12-01","2009-06-01"),("2020-02-01","2020-04-01")]
+    recession_periods = [
+        ("2001-03-01", "2001-11-01"),
+        ("2007-12-01", "2009-06-01"),
+        ("2020-02-01", "2020-04-01"),
+    ]
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-        subplot_titles=("Net Liquidity Components (2000–present)", "S&P 500 vs Fair Value (2000–present)"),
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        subplot_titles=("Net Liquidity · TGA · RRP — Daily (2000–present)",
+                        "S&P 500 vs Fair Value — Daily (2000–present)"),
         vertical_spacing=0.10, row_heights=[0.5, 0.5],
-        specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
+    )
 
     for s, e in recession_periods:
         for row in [1, 2]:
-            fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)", layer="below", line_width=0, row=row, col=1)
+            fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)",
+                          layer="below", line_width=0, row=row, col=1)
 
-    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["NL"], name="Net Liquidity",
-        line=dict(color="#1f77b4", width=2.5), fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"),
-        row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["TGA"], name="TGA",
-        line=dict(color="#2ca02c", width=1.5, dash="dash")), row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["RRP"], name="RRP",
-        line=dict(color="#ff7f0e", width=1.5, dash="dash")), row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["WALCL"], name="WALCL (우축)",
-        line=dict(color="#d62728", width=1.5, dash="dot")), row=1, col=1, secondary_y=True)
-    fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["SP500"], name="S&P 500",
+    # 차트1: NL · TGA · RRP
+    fig.add_trace(go.Scatter(x=df.index, y=df["NL"], name="Net Liquidity",
+        line=dict(color="#1f77b4", width=2),
+        fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["TGA"], name="TGA",
+        line=dict(color="#2ca02c", width=1.5, dash="dash")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["RRP"], name="RRP",
+        line=dict(color="#ff7f0e", width=1.5, dash="dash")), row=1, col=1)
+
+    # 차트2: SPX · FV
+    fig.add_trace(go.Scatter(x=df.index, y=df["SP500"], name="S&P 500",
         line=dict(color="#333333", width=2)), row=2, col=1)
-    if "FV_NL" in df_monthly.columns and df_monthly["FV_NL"].notna().any():
-        fig.add_trace(go.Scatter(x=df_monthly.index, y=df_monthly["FV_NL"], name="NL 회귀 FV",
+    if "FV_NL" in df.columns and df["FV_NL"].notna().any():
+        fig.add_trace(go.Scatter(x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
             line=dict(color="#1f77b4", width=1.5)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df_monthly.index, y=[fv_pe]*len(df_monthly), name=f"P/E×EPS FV ({fv_pe:,.0f})",
+    fig.add_trace(go.Scatter(x=df.index, y=[fv_pe]*len(df),
+        name=f"P/E×EPS FV ({fv_pe:,.0f})",
         line=dict(color="#d62728", width=1.5, dash="dash")), row=2, col=1)
 
     grid = dict(showgrid=True, gridcolor="rgba(204,0,0,0.15)", gridwidth=0.5, griddash="dot",
                 linecolor="#bbb", linewidth=1, showline=True, ticks="outside", tickcolor="#bbb",
                 tickfont=dict(size=10, color="#555"))
-    spx_vals = df_monthly["SP500"].dropna()
+    spx_vals = df["SP500"].dropna()
     spx_min = int(spx_vals.min() * 0.9) if len(spx_vals) else 500
     spx_max = int(spx_vals.max() * 1.05) if len(spx_vals) else 7500
 
-    fig.update_layout(height=680, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
-        font=dict(family="Arial,sans-serif", size=11, color="#333"), hovermode="x unified",
-        margin=dict(t=50, b=40, l=70, r=70),
+    fig.update_layout(
+        height=680, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
+        font=dict(family="Arial,sans-serif", size=11, color="#333"),
+        hovermode="x unified", margin=dict(t=50, b=40, l=70, r=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
-                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#ddd", borderwidth=1, font=dict(size=10)))
+                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#ddd", borderwidth=1, font=dict(size=10)),
+    )
     fig.update_xaxes(**grid)
-    fig.update_yaxes(**grid, title_text="NL·TGA·RRP (B)", title_font=dict(size=10, color="#555"),
-                     tickformat=",", ticksuffix="B", row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="WALCL", title_font=dict(size=10, color="#d62728"),
-                     tickfont=dict(size=10, color="#d62728"), tickformat=",", ticksuffix="B",
-                     showgrid=False, linecolor="#d62728", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(**grid, title_text="Billions USD", title_font=dict(size=10, color="#555"),
+                     tickformat=",", ticksuffix="B", row=1, col=1)
     fig.update_yaxes(**grid, title_text="Index Level", title_font=dict(size=10, color="#555"),
                      tickformat=",", range=[spx_min, spx_max], row=2, col=1)
 
@@ -403,10 +407,10 @@ def build_chart(df_monthly):
 def refresh_data():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 갱신 시작...")
     try:
-        df_daily, df_monthly = build_data()
-        cache["summary"] = build_summary(df_daily)
-        cache["chart_html"] = build_chart(df_monthly)
-        cache["table_rows"] = build_table_rows(df_daily)
+        df = build_data()
+        cache["summary"] = build_summary(df)
+        cache["chart_html"] = build_chart(df)
+        cache["table_rows"] = build_table_rows(df)
         cache["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cache["error"] = None
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 갱신 완료\n")
