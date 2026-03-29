@@ -8,12 +8,6 @@ Net Liquidity Dashboard (Railway 배포용)
   REFRESH_INTERVAL : 갱신 주기 초 (기본 3600)
   START_DATE       : 시작일 (기본 2000-01-01)
   PORT             : Railway 자동 설정
-
-각 시리즈 업데이트 주기:
-  WALCL      : 주간 (매주 목요일)
-  WDTGAL     : 일간
-  RRPONTSYD  : 일간
-  SP500      : 일간
 """
 
 import os
@@ -80,7 +74,6 @@ HTML_TEMPLATE = """
     .summary-box .lbl{color:#666;}
     .summary-box .val{font-weight:700;color:#111;}
     .divider{border:none;border-top:2px solid #cc0000;margin:4px 0 10px;}
-    .freq-note{font-size:10px;color:#999;margin-bottom:12px;padding-left:2px;}
     .error{background:#fff0f0;border:1px solid #cc0000;border-radius:2px;padding:14px;color:#cc0000;margin-bottom:12px;font-size:13px;}
     .loading{text-align:center;padding:80px;color:#888;font-size:14px;}
     .loading p{margin-top:10px;font-size:12px;}
@@ -162,7 +155,7 @@ HTML_TEMPLATE = """
 
   <div class="section-title">요약</div>
   <div class="summary-box">
-    <div class="row"><span class="lbl">기준일 (NL)</span><span class="val">{{ summary.base_date }}</span></div>
+    <div class="row"><span class="lbl">기준일</span><span class="val">{{ summary.base_date }}</span></div>
     <div class="row"><span class="lbl">WALCL ({{ summary.walcl_date }})</span><span class="val">{{ summary.walcl_raw }}</span></div>
     <div class="row"><span class="lbl">TGA ({{ summary.tga_date }})</span><span class="val">{{ summary.tga_raw }}</span></div>
     <div class="row"><span class="lbl">RRP ({{ summary.rrp_date }})</span><span class="val">{{ summary.rrp_raw }}</span></div>
@@ -174,8 +167,7 @@ HTML_TEMPLATE = """
     <div class="row"><span class="lbl">SPX 현재가 (P/E 기준)</span><span class="val {{ 'pos' if summary.fv_pe_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_pe_gap }})</span></div>
   </div>
 
-  <div class="section-title">최근 30일 데이터</div>
-  <div class="freq-note">WALCL: 주간 | TGA·RRP·SP500: 일간 | NL = WALCL(최근값 유지) - TGA - RRP</div>
+  <div class="section-title">최근 10일 데이터</div>
   <div class="tbl-wrap">
     <table>
       <thead>
@@ -237,33 +229,32 @@ def fetch_series(series_id, start, frequency="d"):
 
 def build_data():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL (주간)...")
-    walcl = fetch_series("WALCL", START_DATE, frequency="w")
+    walcl_w = fetch_series("WALCL", START_DATE, frequency="w")
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL (일간)...")
-    tga = fetch_series("WDTGAL", START_DATE, frequency="d")
+    tga_d = fetch_series("WDTGAL", START_DATE, frequency="d")
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD (일간)...")
-    rrp = fetch_series("RRPONTSYD", START_DATE, frequency="d")
+    rrp_d = fetch_series("RRPONTSYD", START_DATE, frequency="d")
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500 (일간)...")
     try:
-        spx = fetch_series("SP500", START_DATE, frequency="d")
+        spx_d = fetch_series("SP500", START_DATE, frequency="d")
     except Exception:
-        spx = pd.Series(dtype=float, name="SP500")
+        spx_d = pd.Series(dtype=float, name="SP500")
 
-    # 일간 기준 DataFrame, WALCL은 forward fill (주간이므로)
-    df = pd.DataFrame({"TGA": tga, "RRP": rrp, "SP500": spx}).sort_index()
-    walcl_daily = walcl.reindex(df.index, method="ffill")
-    df["WALCL"] = walcl_daily
-    df = df.dropna(subset=["TGA", "RRP", "WALCL"])
-    df["NL"] = df["WALCL"] - df["TGA"] - df["RRP"]
-    df["NL_DoD"] = df["NL"].diff()
+    # 일간 DataFrame (요약+테이블용)
+    df_daily = pd.DataFrame({"TGA": tga_d, "RRP": rrp_d, "SP500": spx_d}).sort_index()
+    df_daily["WALCL"] = walcl_w.reindex(df_daily.index, method="ffill")
+    df_daily = df_daily.dropna(subset=["TGA", "RRP", "WALCL"])
+    df_daily["NL"] = df_daily["WALCL"] - df_daily["TGA"] - df_daily["RRP"]
+    df_daily["NL_DoD"] = df_daily["NL"].diff()
 
-    # 차트용 월간 리샘플 (2000년~ 장기차트)
-    df_monthly = df.resample("MS").last().dropna(subset=["WALCL", "TGA", "RRP"])
+    # 월간 DataFrame (차트용)
+    df_monthly = df_daily.resample("MS").last().dropna(subset=["WALCL", "TGA", "RRP"])
     df_monthly["NL"] = df_monthly["WALCL"] - df_monthly["TGA"] - df_monthly["RRP"]
 
-    # 회귀는 월간으로
+    # 회귀 (월간 기준)
     valid = df_monthly[["NL", "SP500"]].dropna()
     if len(valid) >= 10:
         x, y = valid["NL"].values, valid["SP500"].values
@@ -271,13 +262,13 @@ def build_data():
         r2 = np.corrcoef(x, y)[0, 1] ** 2
         print(f"  회귀 R²={r2:.3f}")
         df_monthly["FV_NL"] = slope * df_monthly["NL"] + intercept
-        df["FV_NL"] = slope * df["NL"] + intercept
+        df_daily["FV_NL"] = slope * df_daily["NL"] + intercept
     else:
         df_monthly["FV_NL"] = np.nan
-        df["FV_NL"] = np.nan
+        df_daily["FV_NL"] = np.nan
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: 일간 {len(df)}개 / 월간 {len(df_monthly)}개")
-    return df, df_monthly
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: 일간 {len(df_daily)}개 / 월간 {len(df_monthly)}개")
+    return df_daily, df_monthly
 
 
 def fmt_val(v):
@@ -286,17 +277,17 @@ def fmt_val(v):
     return f"{v:,.0f}B"
 
 
-def build_summary(df):
-    latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else None
+def build_summary(df_daily):
+    latest = df_daily.iloc[-1]
+    prev = df_daily.iloc[-2] if len(df_daily) > 1 else None
     fv_pe = FEPS * FPE
     spx = latest["SP500"] if not pd.isna(latest["SP500"]) else None
     fv_nl = latest["FV_NL"] if "FV_NL" in latest.index and not pd.isna(latest["FV_NL"]) else None
     chg = latest["NL"] - prev["NL"] if prev is not None else 0
 
-    walcl_date = df["WALCL"].last_valid_index()
-    tga_date   = df["TGA"].last_valid_index()
-    rrp_date   = df["RRP"].last_valid_index()
+    walcl_date = df_daily["WALCL"].last_valid_index()
+    tga_date   = df_daily["TGA"].last_valid_index()
+    rrp_date   = df_daily["RRP"].last_valid_index()
 
     fv_nl_gap = fv_nl_cheap = None
     if fv_nl and spx:
@@ -311,7 +302,7 @@ def build_summary(df):
         fv_pe_cheap = gap2 < 0
 
     return {
-        "base_date": df.index[-1].strftime("%Y-%m-%d"),
+        "base_date": df_daily.index[-1].strftime("%Y-%m-%d"),
         "nl": fmt_val(latest["NL"]), "nl_raw": f"{latest['NL']:,.0f}B",
         "nl_chg": f"{'▲' if chg>=0 else '▼'} {fmt_val(abs(chg))} DoD", "nl_chg_pos": chg >= 0,
         "walcl": fmt_val(latest["WALCL"]), "walcl_raw": f"{latest['WALCL']:,.0f}B",
@@ -327,9 +318,9 @@ def build_summary(df):
     }
 
 
-def build_table_rows(df):
+def build_table_rows(df_daily):
     rows = []
-    tail = df.tail(30).copy()
+    tail = df_daily.tail(11).copy()  # 11개 가져와서 DoD 계산 후 10개 표시
     for i, (date, row) in enumerate(tail.iterrows()):
         prev_nl = tail.iloc[i-1]["NL"] if i > 0 else None
         dod = row["NL"] - prev_nl if prev_nl is not None else None
@@ -352,7 +343,7 @@ def build_table_rows(df):
             "fv_nl": f"{fv_nl:,.0f}" if fv_nl else "—",
             "gap": gap, "gap_pos": gap_pos,
         })
-    return list(reversed(rows))
+    return list(reversed(rows[-10:]))
 
 
 def build_chart(df_monthly):
@@ -412,10 +403,10 @@ def build_chart(df_monthly):
 def refresh_data():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 갱신 시작...")
     try:
-        df, df_monthly = build_data()
-        cache["summary"] = build_summary(df)
+        df_daily, df_monthly = build_data()
+        cache["summary"] = build_summary(df_daily)
         cache["chart_html"] = build_chart(df_monthly)
-        cache["table_rows"] = build_table_rows(df)
+        cache["table_rows"] = build_table_rows(df_daily)
         cache["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cache["error"] = None
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 갱신 완료\n")
