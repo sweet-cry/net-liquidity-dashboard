@@ -154,25 +154,70 @@ HTML_TEMPLATE = """
     </div>
   </div>
 
-  <div style="background:#fff;border:1px solid #ddd;border-top:2px solid #cc0000;border-radius:2px;padding:10px 12px 4px;margin-bottom:0;border-bottom:none;">
-    <div style="font-size:12px;font-weight:700;color:#333;margin-bottom:6px;">Net Liquidity · TGA · RRP — Daily (2000–present)</div>
-    <div style="display:flex;gap:14px;font-size:11px;color:#444;flex-wrap:wrap;">
-      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:3px;background:#1f77b4;display:inline-block;"></span>Net Liquidity</span>
-      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;border-top:2px dashed #2ca02c;display:inline-block;"></span>TGA</span>
-      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;border-top:2px dashed #ff7f0e;display:inline-block;"></span>RRP</span>
-      <span style="margin-left:auto;font-size:10px;color:#999;">음영: 경기침체 구간</span>
+  <div style="background:#fff;border:1px solid #ddd;border-radius:2px;overflow:hidden;margin-bottom:12px;">
+    <div style="padding:10px 12px;border-bottom:2px solid #cc0000;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:#333;margin-bottom:5px;">Net Liquidity · TGA · RRP — Daily (2000–present)</div>
+        <div style="display:flex;gap:14px;font-size:11px;color:#444;flex-wrap:wrap;">
+          <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:3px;background:#1f77b4;display:inline-block;"></span>Net Liquidity</span>
+          <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;border-top:2px dashed #2ca02c;display:inline-block;"></span>TGA</span>
+          <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;border-top:2px dashed #ff7f0e;display:inline-block;"></span>RRP</span>
+          <span style="font-size:10px;color:#999;">음영: 경기침체</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button onclick="zoomChart('c1','in')" style="font-size:11px;padding:3px 9px;border:1px solid #ddd;border-radius:2px;background:#f8f8f8;cursor:pointer;color:#555;">+</button>
+        <button onclick="zoomChart('c1','out')" style="font-size:11px;padding:3px 9px;border:1px solid #ddd;border-radius:2px;background:#f8f8f8;cursor:pointer;color:#555;">−</button>
+        <button onclick="resetChart('c1')" style="font-size:11px;padding:3px 9px;border:1px solid #ddd;border-radius:2px;background:#f8f8f8;cursor:pointer;color:#555;">↺</button>
+      </div>
     </div>
+    <div id="c1" style="padding:4px;">{{ chart1_html | safe }}</div>
   </div>
-  <div class="chart-box" style="border-top:none;border-radius:0 0 2px 2px;margin-bottom:4px;">{{ chart1_html | safe }}</div>
 
-  <div style="background:#fff;border:1px solid #ddd;border-top:2px solid #cc0000;border-radius:2px;padding:10px 12px 4px;margin-bottom:0;margin-top:8px;border-bottom:none;">
-    <div style="font-size:12px;font-weight:700;color:#333;margin-bottom:6px;">S&P 500 vs NL Regression FV — Daily (2000–present)</div>
-    <div style="display:flex;gap:14px;font-size:11px;color:#444;flex-wrap:wrap;">
-      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:3px;background:#333;display:inline-block;"></span>S&P 500</span>
-      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:2px;border-top:2px solid #1f77b4;display:inline-block;"></span>NL 회귀 FV</span>
+  <div style="background:#fff;border:1px solid #ddd;border-radius:2px;overflow:hidden;margin-bottom:12px;">
+    <div style="padding:10px 12px;border-bottom:2px solid #cc0000;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:#333;margin-bottom:5px;">S&P 500 vs NL Regression FV — Daily (2000–present)</div>
+        <div style="display:flex;gap:14px;font-size:11px;color:#444;flex-wrap:wrap;">
+          <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:3px;background:#333;display:inline-block;"></span>S&P 500</span>
+          <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:2px;border-top:2px solid #1f77b4;display:inline-block;"></span>NL 회귀 FV</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button onclick="zoomChart('c2','in')" style="font-size:11px;padding:3px 9px;border:1px solid #ddd;border-radius:2px;background:#f8f8f8;cursor:pointer;color:#555;">+</button>
+        <button onclick="zoomChart('c2','out')" style="font-size:11px;padding:3px 9px;border:1px solid #ddd;border-radius:2px;background:#f8f8f8;cursor:pointer;color:#555;">−</button>
+        <button onclick="resetChart('c2')" style="font-size:11px;padding:3px 9px;border:1px solid #ddd;border-radius:2px;background:#f8f8f8;cursor:pointer;color:#555;">↺</button>
+      </div>
     </div>
+    <div id="c2" style="padding:4px;">{{ chart2_html | safe }}</div>
   </div>
-  <div class="chart-box" style="border-top:none;border-radius:0 0 2px 2px;margin-bottom:12px;">{{ chart2_html | safe }}</div>
+
+  <script>
+  function getPlotlyDiv(cid){
+    return document.getElementById(cid).querySelector('.js-plotly-plot');
+  }
+  function zoomChart(cid, dir){
+    const el = getPlotlyDiv(cid);
+    if(!el || !window.Plotly) return;
+    const layout = el.layout;
+    const xa = layout.xaxis;
+    if(!xa || !xa.range) return;
+    const r = xa.range;
+    const mid = (new Date(r[0]).getTime() + new Date(r[1]).getTime()) / 2;
+    const half = (new Date(r[1]).getTime() - new Date(r[0]).getTime()) / 2;
+    const factor = dir === 'in' ? 0.6 : 1.6;
+    const newHalf = half * factor;
+    Plotly.relayout(el, {'xaxis.range': [
+      new Date(mid - newHalf).toISOString().slice(0,10),
+      new Date(mid + newHalf).toISOString().slice(0,10)
+    ]});
+  }
+  function resetChart(cid){
+    const el = getPlotlyDiv(cid);
+    if(!el || !window.Plotly) return;
+    Plotly.relayout(el, {'xaxis.autorange': true, 'yaxis.autorange': true});
+  }
+  </script>
 
   <div class="section-title">계산 방법론</div>
   <div class="method-box">
@@ -415,7 +460,7 @@ def build_chart1(df):
     fig.update_xaxes(**grid)
     fig.update_yaxes(**grid, title_text="Billions USD", title_font=dict(size=10, color="#555"),
                      tickformat=",", ticksuffix="B")
-    return fig.to_html(include_plotlyjs="cdn", full_html=False, config={"displayModeBar": True})
+    return fig.to_html(include_plotlyjs="cdn", full_html=False, config={"displayModeBar": False})
 
 
 def build_chart2(df):
@@ -448,7 +493,7 @@ def build_chart2(df):
     fig.update_xaxes(**grid)
     fig.update_yaxes(**grid, title_text="Index Level", title_font=dict(size=10, color="#555"),
                      tickformat=",", range=[spx_min, spx_max])
-    return fig.to_html(include_plotlyjs=False, full_html=False, config={"displayModeBar": True})
+    return fig.to_html(include_plotlyjs=False, full_html=False, config={"displayModeBar": False})
 
 
 def refresh_data():
