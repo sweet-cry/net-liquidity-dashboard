@@ -29,9 +29,7 @@ START_DATE       = os.environ.get("START_DATE", "2000-01-01")
 PORT             = int(os.environ.get("PORT", "5000"))
 
 app = Flask(__name__)
-
-cache = {"chart_html": None, "summary": None, "updated_at": None, "error": None}
-
+cache = {"chart_html": None, "summary": None, "table_rows": None, "updated_at": None, "error": None}
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
 HTML_TEMPLATE = """
@@ -58,13 +56,31 @@ HTML_TEMPLATE = """
     .mc-sub{font-size:11px;margin-top:3px;}
     .pos{color:#2ca02c;}.neg{color:#d62728;}.neu{color:#888;}
     .chart-box{background:#fff;border:1px solid #ddd;border-radius:2px;padding:4px;margin-bottom:12px;}
+    .section-title{font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;padding-left:2px;}
+    .tbl-wrap{background:#fff;border:1px solid #ddd;border-radius:2px;overflow-x:auto;margin-bottom:12px;}
+    table{width:100%;border-collapse:collapse;font-size:12px;font-family:'Courier New',monospace;}
+    thead tr{background:#cc0000;color:#fff;}
+    thead th{padding:8px 12px;text-align:right;font-weight:700;font-size:11px;white-space:nowrap;}
+    thead th:first-child{text-align:left;}
+    tbody tr:nth-child(even){background:#f9f9f9;}
+    tbody tr:hover{background:#fff3f3;}
+    tbody td{padding:7px 12px;text-align:right;border-bottom:1px solid #eee;white-space:nowrap;}
+    tbody td:first-child{text-align:left;color:#555;}
+    .badge-up{background:#e8f5e9;color:#2ca02c;padding:1px 5px;border-radius:2px;font-size:11px;}
+    .badge-dn{background:#fff0f0;color:#d62728;padding:1px 5px;border-radius:2px;font-size:11px;}
+    .summary-box{background:#fff;border:1px solid #ddd;border-top:3px solid #cc0000;border-radius:2px;padding:14px 18px;margin-bottom:12px;font-family:'Courier New',monospace;font-size:12px;}
+    .summary-box .row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #f0f0f0;}
+    .summary-box .row:last-child{border-bottom:none;}
+    .summary-box .lbl{color:#666;}
+    .summary-box .val{font-weight:700;color:#111;}
+    .divider{border:none;border-top:2px solid #cc0000;margin:4px 0 10px;}
     .error{background:#fff0f0;border:1px solid #cc0000;border-radius:2px;padding:14px;color:#cc0000;margin-bottom:12px;font-size:13px;}
     .loading{text-align:center;padding:80px;color:#888;font-size:14px;}
     .loading p{margin-top:10px;font-size:12px;}
     .footer{font-size:10px;color:#aaa;text-align:center;padding:10px;border-top:1px solid #ddd;margin-top:4px;}
   </style>
   <script>
-    let cd = {{ refresh_interval }};
+    let cd={{ refresh_interval }};
     function tick(){
       cd--;
       const el=document.getElementById('cd');
@@ -74,9 +90,7 @@ HTML_TEMPLATE = """
     }
     window.onload=function(){
       tick();
-      {% if not summary and not error %}
-      setTimeout(()=>location.reload(), 10000);
-      {% endif %}
+      {% if not summary and not error %}setTimeout(()=>location.reload(),10000);{% endif %}
     };
     function manualRefresh(){
       document.getElementById('cd').textContent='갱신 중...';
@@ -95,14 +109,15 @@ HTML_TEMPLATE = """
 </div>
 
 <div class="container">
-  {% if error %}
+{% if error %}
   <div class="error">Error: {{ error }}</div>
-  {% elif not summary %}
+{% elif not summary %}
   <div class="loading">
     <div>FRED 데이터 로딩 중...</div>
-    <p>2000년부터 전체 데이터 조회 중입니다. 30초 후 자동으로 새로고침됩니다.</p>
+    <p>2000년부터 전체 데이터 조회 중입니다. 잠시 후 자동으로 새로고침됩니다.</p>
   </div>
-  {% else %}
+{% else %}
+
   <div class="metrics">
     <div class="mc">
       <div class="mc-lbl">Net Liquidity</div>
@@ -135,8 +150,58 @@ HTML_TEMPLATE = """
       <div class="mc-sub neu">Reverse Repo</div>
     </div>
   </div>
+
   <div class="chart-box">{{ chart_html | safe }}</div>
-  {% endif %}
+
+  <div class="section-title">요약</div>
+  <div class="summary-box">
+    <div class="row"><span class="lbl">기준일</span><span class="val">{{ summary.base_date }}</span></div>
+    <div class="row"><span class="lbl">WALCL</span><span class="val">{{ summary.walcl_raw }}</span></div>
+    <div class="row"><span class="lbl">TGA</span><span class="val">{{ summary.tga_raw }}</span></div>
+    <div class="row"><span class="lbl">RRP</span><span class="val">{{ summary.rrp_raw }}</span></div>
+    <div class="row"><span class="lbl">Net Liquidity</span><span class="val {{ 'pos' if summary.nl_wow_pos else 'neg' }}">{{ summary.nl_raw }} &nbsp;({{ summary.nl_wow }})</span></div>
+    <hr class="divider">
+    <div class="row"><span class="lbl">NL 회귀 공정가치</span><span class="val">{{ summary.fv_nl }}</span></div>
+    <div class="row"><span class="lbl">SPX 현재가 (NL 기준)</span><span class="val {{ 'pos' if summary.fv_nl_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_nl_gap }})</span></div>
+    <div class="row"><span class="lbl">P/E×EPS 공정가치</span><span class="val">{{ summary.fv_pe }}</span></div>
+    <div class="row"><span class="lbl">SPX 현재가 (P/E 기준)</span><span class="val {{ 'pos' if summary.fv_pe_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_pe_gap }})</span></div>
+  </div>
+
+  <div class="section-title">최근 10개월 데이터</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>날짜</th>
+          <th>WALCL (B)</th>
+          <th>TGA (B)</th>
+          <th>RRP (B)</th>
+          <th>Net Liq (B)</th>
+          <th>MoM</th>
+          <th>SP500</th>
+          <th>NL FV</th>
+          <th>괴리율</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in table_rows %}
+        <tr>
+          <td>{{ row.date }}</td>
+          <td>{{ row.walcl }}</td>
+          <td>{{ row.tga }}</td>
+          <td>{{ row.rrp }}</td>
+          <td><strong>{{ row.nl }}</strong></td>
+          <td>{% if row.mom_pos is not none %}<span class="{{ 'badge-up' if row.mom_pos else 'badge-dn' }}">{{ row.mom }}</span>{% else %}—{% endif %}</td>
+          <td>{{ row.spx }}</td>
+          <td>{{ row.fv_nl }}</td>
+          <td>{% if row.gap is not none %}<span class="{{ 'badge-up' if row.gap_pos else 'badge-dn' }}">{{ row.gap }}</span>{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+{% endif %}
   <div class="footer">
     Source: Federal Reserve Bank of St. Louis (FRED) &nbsp;|&nbsp; WALCL · WDTGAL · RRPONTSYD · SP500 &nbsp;|&nbsp; 2000–present
   </div>
@@ -176,12 +241,9 @@ def fetch_auto(series_id, start):
 
 
 def build_data():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL...")
-    walcl = fetch_auto("WALCL", START_DATE)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL...")
-    tga = fetch_auto("WDTGAL", START_DATE)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD...")
-    rrp = fetch_auto("RRPONTSYD", START_DATE)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL..."); walcl = fetch_auto("WALCL", START_DATE)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL..."); tga = fetch_auto("WDTGAL", START_DATE)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD..."); rrp = fetch_auto("RRPONTSYD", START_DATE)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500...")
     try:
         spx = fetch_auto("SP500", START_DATE)
@@ -214,33 +276,73 @@ def fmt_val(v):
     return f"{v:,.0f}B"
 
 
+def fmt_num(v):
+    if pd.isna(v):
+        return "—"
+    return f"{v:,.0f}"
+
+
 def build_summary(df):
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else None
     fv_pe = FEPS * FPE
     spx = latest["SP500"] if not pd.isna(latest["SP500"]) else None
     fv_nl = latest["FV_NL"] if "FV_NL" in latest.index and not pd.isna(latest["FV_NL"]) else None
-
     wow = latest["NL"] - prev["NL"] if prev is not None else 0
+
     fv_nl_gap = fv_nl_cheap = None
     if fv_nl and spx:
         gap = (spx - fv_nl) / fv_nl * 100
-        fv_nl_gap = f"SPX {'+' if gap>0 else ''}{gap:.1f}% {'고평가' if gap>0 else '저평가'}"
+        fv_nl_gap = f"{'+' if gap>0 else ''}{gap:.1f}% {'고평가' if gap>0 else '저평가'}"
         fv_nl_cheap = gap < 0
+
     fv_pe_gap = fv_pe_cheap = None
     if spx:
         gap2 = (spx - fv_pe) / fv_pe * 100
-        fv_pe_gap = f"SPX {'+' if gap2>0 else ''}{gap2:.1f}% {'고평가' if gap2>0 else '저평가'}"
+        fv_pe_gap = f"{'+' if gap2>0 else ''}{gap2:.1f}% {'고평가' if gap2>0 else '저평가'}"
         fv_pe_cheap = gap2 < 0
 
     return {
-        "nl": fmt_val(latest["NL"]), "nl_wow": f"{'▲' if wow>=0 else '▼'} {fmt_val(abs(wow))} MoM",
-        "nl_wow_pos": wow >= 0, "walcl": fmt_val(latest["WALCL"]),
-        "tga": fmt_val(latest["TGA"]), "rrp": fmt_val(latest["RRP"]),
+        "base_date": df.index[-1].strftime("%Y-%m-%d"),
+        "nl": fmt_val(latest["NL"]), "nl_raw": f"{latest['NL']:,.0f}B",
+        "nl_wow": f"{'▲' if wow>=0 else '▼'} {fmt_val(abs(wow))} MoM", "nl_wow_pos": wow >= 0,
+        "walcl": fmt_val(latest["WALCL"]), "walcl_raw": f"{latest['WALCL']:,.0f}B",
+        "tga": fmt_val(latest["TGA"]), "tga_raw": f"{latest['TGA']:,.0f}B",
+        "rrp": fmt_val(latest["RRP"]), "rrp_raw": f"{latest['RRP']:,.0f}B",
+        "spx_raw": f"{spx:,.0f}" if spx else "—",
         "fv_nl": f"{fv_nl:,.0f}" if fv_nl else "—",
         "fv_nl_gap": fv_nl_gap or "데이터 부족", "fv_nl_cheap": fv_nl_cheap,
         "fv_pe": f"{fv_pe:,.0f}", "fv_pe_gap": fv_pe_gap or "SPX 없음", "fv_pe_cheap": fv_pe_cheap,
     }
+
+
+def build_table_rows(df):
+    rows = []
+    tail = df.tail(10).copy()
+    for i, (date, row) in enumerate(tail.iterrows()):
+        prev_nl = tail.iloc[i-1]["NL"] if i > 0 else None
+        mom = row["NL"] - prev_nl if prev_nl is not None else None
+        spx = row["SP500"] if not pd.isna(row["SP500"]) else None
+        fv_nl = row["FV_NL"] if "FV_NL" in row.index and not pd.isna(row["FV_NL"]) else None
+        gap = None
+        gap_pos = None
+        if spx and fv_nl:
+            g = (spx - fv_nl) / fv_nl * 100
+            gap = f"{'+' if g>0 else ''}{g:.1f}%"
+            gap_pos = g < 0
+        rows.append({
+            "date": date.strftime("%Y-%m"),
+            "walcl": f"{row['WALCL']:,.0f}",
+            "tga": f"{row['TGA']:,.0f}",
+            "rrp": f"{row['RRP']:,.0f}",
+            "nl": f"{row['NL']:,.0f}",
+            "mom": f"{'▲' if mom>=0 else '▼'}{abs(mom):,.0f}" if mom is not None else "—",
+            "mom_pos": mom >= 0 if mom is not None else None,
+            "spx": f"{spx:,.0f}" if spx else "—",
+            "fv_nl": f"{fv_nl:,.0f}" if fv_nl else "—",
+            "gap": gap, "gap_pos": gap_pos,
+        })
+    return list(reversed(rows))
 
 
 def build_chart(df):
@@ -303,6 +405,7 @@ def refresh_data():
         df = build_data()
         cache["summary"] = build_summary(df)
         cache["chart_html"] = build_chart(df)
+        cache["table_rows"] = build_table_rows(df)
         cache["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cache["error"] = None
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 갱신 완료\n")
@@ -322,6 +425,7 @@ def background_loop():
 def index():
     return render_template_string(HTML_TEMPLATE,
         chart_html=cache["chart_html"], summary=cache["summary"],
+        table_rows=cache["table_rows"] or [],
         updated_at=cache["updated_at"] or "—",
         error=cache["error"], refresh_interval=REFRESH_INTERVAL)
 
