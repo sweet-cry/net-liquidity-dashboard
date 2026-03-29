@@ -1,14 +1,16 @@
 """
 Net Liquidity 로컬 웹서버 (2000년~ 초장기 FRED 스타일)
 =======================================================
-필요 패키지: pip install flask requests pandas plotly numpy
+필요 패키지: pip install flask requests pandas plotly numpy gunicorn
 
-실행:
+로컬 실행:
   python dashboard_server.py --key YOUR_FRED_API_KEY
 
-브라우저: http://localhost:5000
+Railway 배포:
+  환경변수 FRED_API_KEY 설정하면 자동으로 읽음
 """
 
+import os
 import argparse
 import threading
 import time
@@ -22,11 +24,11 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-API_KEY = ""
-FEPS = 270.0
-FPE = 21.0
-REFRESH_INTERVAL = 3600
-START_DATE = "2000-01-01"
+API_KEY = os.environ.get("FRED_API_KEY", "")
+FEPS = float(os.environ.get("FEPS", "270"))
+FPE = float(os.environ.get("FPE", "21"))
+REFRESH_INTERVAL = int(os.environ.get("REFRESH_INTERVAL", "3600"))
+START_DATE = os.environ.get("START_DATE", "2000-01-01")
 
 cache = {
     "chart_html": None,
@@ -95,7 +97,7 @@ HTML_TEMPLATE = """
   {% if error %}
   <div class="error">Error: {{ error }}</div>
   {% elif not summary %}
-  <div class="loading">Loading data from FRED...</div>
+  <div class="loading">Loading data from FRED... (최초 로딩 20~30초 소요)</div>
   {% else %}
 
   <div class="metrics">
@@ -164,9 +166,7 @@ def fetch_auto(series_id, start):
         try:
             s = fetch_series(series_id, start, freq)
             if len(s) > 0:
-                if freq == "d":
-                    s = s.resample("MS").last().dropna()
-                elif freq == "w":
+                if freq in ["d", "w"]:
                     s = s.resample("MS").last().dropna()
                 return s
         except Exception:
@@ -175,13 +175,13 @@ def fetch_auto(series_id, start):
 
 
 def build_data():
-    print(f"  [{datetime.now().strftime('%H:%M:%S')}] WALCL 로딩...")
+    print(f"  WALCL 로딩...")
     walcl = fetch_auto("WALCL", START_DATE)
-    print(f"  [{datetime.now().strftime('%H:%M:%S')}] WDTGAL 로딩...")
+    print(f"  WDTGAL 로딩...")
     tga = fetch_auto("WDTGAL", START_DATE)
-    print(f"  [{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD 로딩...")
+    print(f"  RRPONTSYD 로딩...")
     rrp = fetch_auto("RRPONTSYD", START_DATE)
-    print(f"  [{datetime.now().strftime('%H:%M:%S')}] SP500 로딩...")
+    print(f"  SP500 로딩...")
     try:
         spx = fetch_auto("SP500", START_DATE)
     except Exception:
@@ -191,7 +191,7 @@ def build_data():
     df[["WALCL", "TGA", "RRP"]] = df[["WALCL", "TGA", "RRP"]].ffill()
     df = df.dropna(subset=["WALCL", "TGA", "RRP"])
     df["NL"] = df["WALCL"] - df["TGA"] - df["RRP"]
-    df["NL_WoW"] = df["NL"].diff()
+    df["NL_MoM"] = df["NL"].diff()
 
     valid = df[["NL", "SP500"]].dropna()
     if len(valid) >= 10:
@@ -203,13 +203,11 @@ def build_data():
     else:
         df["FV_NL"] = np.nan
 
-    print(f"  완료: {len(df)}개 포인트 ({df.index[0].date()} ~ {df.index[-1].date()})")
+    print(f"  완료: {len(df)}개 ({df.index[0].date()} ~ {df.index[-1].date()})")
     return df
 
 
 def fmt_val(v):
-    if abs(v) >= 1_000_000:
-        return f"{v/1_000_000:.2f}T"
     if abs(v) >= 1_000:
         return f"{v/1_000:.2f}T"
     return f"{v:,.0f}B"
@@ -253,12 +251,6 @@ def build_summary(df):
     }
 
 
-def t_fmt(v):
-    if v >= 1000:
-        return f"{v/1000:.1f}T"
-    return f"{int(v)}B"
-
-
 def build_chart(df):
     fv_pe = FEPS * FPE
 
@@ -279,50 +271,32 @@ def build_chart(df):
 
     for start_r, end_r in recession_periods:
         for row in [1, 2]:
-            fig.add_vrect(
-                x0=start_r, x1=end_r,
-                fillcolor="rgba(180,0,0,0.07)",
-                layer="below", line_width=0,
-                row=row, col=1,
-            )
+            fig.add_vrect(x0=start_r, x1=end_r,
+                fillcolor="rgba(180,0,0,0.07)", layer="below", line_width=0,
+                row=row, col=1)
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["NL"], name="Net Liquidity",
+    fig.add_trace(go.Scatter(x=df.index, y=df["NL"], name="Net Liquidity",
         line=dict(color="#1f77b4", width=2.5),
-        fill="tozeroy", fillcolor="rgba(31,119,180,0.10)",
-    ), row=1, col=1, secondary_y=False)
+        fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"),
+        row=1, col=1, secondary_y=False)
+    fig.add_trace(go.Scatter(x=df.index, y=df["TGA"], name="TGA",
+        line=dict(color="#2ca02c", width=1.5, dash="dash")),
+        row=1, col=1, secondary_y=False)
+    fig.add_trace(go.Scatter(x=df.index, y=df["RRP"], name="RRP",
+        line=dict(color="#ff7f0e", width=1.5, dash="dash")),
+        row=1, col=1, secondary_y=False)
+    fig.add_trace(go.Scatter(x=df.index, y=df["WALCL"], name="WALCL (우축)",
+        line=dict(color="#d62728", width=1.5, dash="dot")),
+        row=1, col=1, secondary_y=True)
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["TGA"], name="TGA",
-        line=dict(color="#2ca02c", width=1.5, dash="dash"),
-    ), row=1, col=1, secondary_y=False)
-
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["RRP"], name="RRP",
-        line=dict(color="#ff7f0e", width=1.5, dash="dash"),
-    ), row=1, col=1, secondary_y=False)
-
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["WALCL"], name="WALCL (우축)",
-        line=dict(color="#d62728", width=1.5, dash="dot"),
-    ), row=1, col=1, secondary_y=True)
-
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["SP500"], name="S&P 500",
-        line=dict(color="#333333", width=2),
-    ), row=2, col=1)
-
+    fig.add_trace(go.Scatter(x=df.index, y=df["SP500"], name="S&P 500",
+        line=dict(color="#333333", width=2)), row=2, col=1)
     if "FV_NL" in df.columns and df["FV_NL"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
-            line=dict(color="#1f77b4", width=1.5),
-        ), row=2, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=df.index, y=[fv_pe] * len(df),
+        fig.add_trace(go.Scatter(x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
+            line=dict(color="#1f77b4", width=1.5)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=[fv_pe]*len(df),
         name=f"P/E×EPS FV ({fv_pe:,.0f})",
-        line=dict(color="#d62728", width=1.5, dash="dash"),
-    ), row=2, col=1)
+        line=dict(color="#d62728", width=1.5, dash="dash")), row=2, col=1)
 
     grid_style = dict(showgrid=True, gridcolor="rgba(204,0,0,0.15)",
                       gridwidth=0.5, griddash="dot",
@@ -335,56 +309,31 @@ def build_chart(df):
     spx_max = int(spx_vals.max() * 1.05) if len(spx_vals) else 7500
 
     fig.update_layout(
-        height=680,
-        plot_bgcolor="#e8e8e8",
-        paper_bgcolor="#ffffff",
+        height=680, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
         font=dict(family="Arial, sans-serif", size=11, color="#333"),
         hovermode="x unified",
         margin=dict(t=50, b=40, l=70, r=70),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom", y=1.01,
-            xanchor="left", x=0,
-            bgcolor="rgba(255,255,255,0.85)",
-            bordercolor="#ddd", borderwidth=1,
-            font=dict(size=10),
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#ddd", borderwidth=1,
+                    font=dict(size=10)),
     )
-
     fig.update_xaxes(**grid_style)
-
-    fig.update_yaxes(
-        **grid_style,
-        title_text="NL · TGA · RRP (Billions)",
-        title_font=dict(size=10, color="#555"),
-        tickformat=",",
-        ticksuffix="B",
-        row=1, col=1, secondary_y=False,
-    )
-    fig.update_yaxes(
-        title_text="WALCL",
-        title_font=dict(size=10, color="#d62728"),
-        tickfont=dict(size=10, color="#d62728"),
-        tickformat=",",
-        ticksuffix="B",
-        showgrid=False,
-        linecolor="#d62728",
-        row=1, col=1, secondary_y=True,
-    )
-    fig.update_yaxes(
-        **grid_style,
-        title_text="Index Level",
-        title_font=dict(size=10, color="#555"),
-        tickformat=",",
-        range=[spx_min, spx_max],
-        row=2, col=1,
-    )
+    fig.update_yaxes(**grid_style, title_text="NL · TGA · RRP (Billions)",
+                     title_font=dict(size=10, color="#555"),
+                     tickformat=",", ticksuffix="B", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="WALCL", title_font=dict(size=10, color="#d62728"),
+                     tickfont=dict(size=10, color="#d62728"),
+                     tickformat=",", ticksuffix="B", showgrid=False,
+                     linecolor="#d62728", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(**grid_style, title_text="Index Level",
+                     title_font=dict(size=10, color="#555"),
+                     tickformat=",", range=[spx_min, spx_max], row=2, col=1)
 
     return fig.to_html(include_plotlyjs="cdn", full_html=False, config={"displayModeBar": True})
 
 
 def refresh_data():
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 데이터 갱신 시작...")
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 갱신 시작...")
     try:
         df = build_data()
         cache["summary"] = build_summary(df)
@@ -423,31 +372,35 @@ def manual_refresh():
 
 def main():
     global API_KEY, FEPS, FPE, REFRESH_INTERVAL, START_DATE
-    parser = argparse.ArgumentParser(description="Net Liquidity 대시보드 (2000~)")
-    parser.add_argument("--key",     required=True,  help="FRED API Key")
-    parser.add_argument("--feps",    type=float, default=270,  help="Forward EPS, 기본=270")
-    parser.add_argument("--fpe",     type=float, default=21,   help="Forward P/E, 기본=21")
-    parser.add_argument("--port",    type=int,   default=5000, help="포트, 기본=5000")
-    parser.add_argument("--refresh", type=int,   default=3600, help="갱신 주기(초), 기본=3600")
-    parser.add_argument("--start",   default="2000-01-01",     help="시작일, 기본=2000-01-01")
+    parser = argparse.ArgumentParser(description="Net Liquidity 대시보드")
+    parser.add_argument("--key",     default="",           help="FRED API Key (환경변수 FRED_API_KEY 우선)")
+    parser.add_argument("--feps",    type=float, default=FEPS)
+    parser.add_argument("--fpe",     type=float, default=FPE)
+    parser.add_argument("--port",    type=int,   default=int(os.environ.get("PORT", 5000)))
+    parser.add_argument("--refresh", type=int,   default=REFRESH_INTERVAL)
+    parser.add_argument("--start",   default=START_DATE)
     args = parser.parse_args()
 
-    API_KEY = args.key
+    if args.key:
+        API_KEY = args.key
     FEPS = args.feps
     FPE = args.fpe
     REFRESH_INTERVAL = args.refresh
     START_DATE = args.start
 
-    print(f"\n  Net Liquidity Dashboard  ({START_DATE} ~ 현재)")
-    print(f"  Forward EPS={FEPS}, P/E={FPE} → FV={FEPS*FPE:,.0f}")
-    print(f"  갱신 주기: {REFRESH_INTERVAL//60}분")
-    print(f"\n  초기 데이터 로딩 중 (2000년부터 전체 조회 — 10~20초 소요)...")
-    refresh_data()
+    if not API_KEY:
+        print("오류: FRED API Key가 없습니다. --key 또는 환경변수 FRED_API_KEY 설정하세요.")
+        return
 
+    print(f"\n  Net Liquidity Dashboard ({START_DATE} ~ 현재)")
+    print(f"  FV = EPS {FEPS} × P/E {FPE} = {FEPS*FPE:,.0f}")
+    print(f"  갱신: {REFRESH_INTERVAL//60}분 | 포트: {args.port}")
+    print(f"  초기 로딩 중 (20~30초)...")
+
+    refresh_data()
     threading.Thread(target=background_refresh, daemon=True).start()
 
-    print(f"  브라우저: http://localhost:{args.port}")
-    print(f"  종료: Ctrl+C\n")
+    print(f"  브라우저: http://localhost:{args.port}\n")
     app.run(host="0.0.0.0", port=args.port, debug=False)
 
 
