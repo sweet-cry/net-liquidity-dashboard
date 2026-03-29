@@ -3,8 +3,6 @@ Net Liquidity Dashboard (Railway 배포용)
 ========================================
 환경변수:
   FRED_API_KEY     : FRED API Key (필수)
-  FEPS             : Forward EPS override (없으면 FRED Trailing 자동)
-  FPE              : Forward P/E override (없으면 21 기본)
   REFRESH_INTERVAL : 갱신 주기 초 (기본 3600)
   START_DATE       : 시작일 (기본 2000-01-01)
   PORT             : Railway 자동 설정
@@ -18,23 +16,17 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string
 from datetime import datetime
 
 API_KEY          = os.environ.get("FRED_API_KEY", "")
-FEPS_OVERRIDE    = os.environ.get("FEPS", "")
-FPE_OVERRIDE     = os.environ.get("FPE", "")
 REFRESH_INTERVAL = int(os.environ.get("REFRESH_INTERVAL", "3600"))
 START_DATE       = os.environ.get("START_DATE", "2000-01-01")
 PORT             = int(os.environ.get("PORT", "5000"))
 
 app = Flask(__name__)
-cache = {
-    "chart_html": None, "summary": None, "table_rows": None,
-    "updated_at": None, "error": None,
-    "trailing_eps": None, "trailing_eps_date": None,
-    "user_eps": None, "user_pe": None,
-}
+cache = {"chart_html": None, "summary": None, "table_rows": None,
+         "updated_at": None, "error": None, "model_info": None}
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
 HTML_TEMPLATE = """
@@ -62,17 +54,12 @@ HTML_TEMPLATE = """
     .pos{color:#2ca02c;}.neg{color:#d62728;}.neu{color:#888;}
     .chart-box{background:#fff;border:1px solid #ddd;border-radius:2px;padding:4px;margin-bottom:12px;}
     .section-title{font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;padding-left:2px;}
-    .eps-box{background:#fff;border:1px solid #ddd;border-top:3px solid #cc0000;border-radius:2px;padding:14px 18px;margin-bottom:12px;font-size:12px;}
-    .eps-box .row{display:flex;align-items:center;gap:12px;padding:4px 0;flex-wrap:wrap;}
-    .eps-box label{color:#666;min-width:160px;font-size:12px;}
-    .eps-box input{font-family:'Courier New',monospace;font-size:13px;padding:4px 8px;border:1px solid #ddd;border-radius:2px;width:100px;color:#111;}
-    .eps-box input:focus{border-color:#cc0000;outline:none;}
-    .eps-box .hint{font-size:11px;color:#aaa;}
-    .apply-btn{font-size:12px;padding:6px 16px;border:1px solid #cc0000;border-radius:2px;background:#cc0000;color:#fff;cursor:pointer;margin-top:8px;}
-    .apply-btn:hover{background:#aa0000;}
-    .reset-btn{font-size:12px;padding:6px 16px;border:1px solid #aaa;border-radius:2px;background:transparent;color:#666;cursor:pointer;margin-top:8px;margin-left:6px;}
-    .reset-btn:hover{background:#f0f0f0;}
-    .eps-source{font-size:11px;color:#888;margin-top:6px;}
+    .method-box{background:#fff;border:1px solid #ddd;border-left:4px solid #cc0000;border-radius:2px;padding:16px 18px;margin-bottom:12px;font-size:12px;line-height:1.7;}
+    .method-box h3{font-size:12px;font-weight:700;color:#cc0000;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;}
+    .method-box .formula{font-family:'Courier New',monospace;background:#f8f8f8;border:1px solid #eee;padding:8px 12px;border-radius:2px;margin:6px 0;font-size:12px;color:#333;}
+    .method-box .desc{color:#555;margin:4px 0;}
+    .method-box .warn{color:#888;font-size:11px;margin-top:8px;padding-top:8px;border-top:1px dashed #ddd;}
+    .model-info{background:#f8f8f8;border:1px solid #eee;border-radius:2px;padding:8px 12px;margin-top:8px;font-family:'Courier New',monospace;font-size:11px;color:#555;}
     .tbl-wrap{background:#fff;border:1px solid #ddd;border-radius:2px;overflow-x:auto;margin-bottom:12px;}
     table{width:100%;border-collapse:collapse;font-size:12px;font-family:'Courier New',monospace;}
     thead tr{background:#cc0000;color:#fff;}
@@ -112,19 +99,6 @@ HTML_TEMPLATE = """
       document.getElementById('cd').textContent='갱신 중...';
       fetch('/refresh').then(()=>setTimeout(()=>location.reload(),3000));
     }
-    function applyEPS(){
-      const eps=document.getElementById('inp-eps').value;
-      const pe=document.getElementById('inp-pe').value;
-      fetch('/set_eps',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({eps:parseFloat(eps),pe:parseFloat(pe)})})
-        .then(r=>r.json()).then(d=>{
-          if(d.ok) location.reload();
-          else alert('입력값 오류');
-        });
-    }
-    function resetEPS(){
-      fetch('/reset_eps',{method:'POST'}).then(()=>location.reload());
-    }
   </script>
 </head>
 <body>
@@ -159,11 +133,6 @@ HTML_TEMPLATE = """
       <div class="mc-sub {{ 'pos' if summary.fv_nl_cheap else ('neg' if summary.fv_nl_cheap is not none else 'neu') }}">{{ summary.fv_nl_gap }}</div>
     </div>
     <div class="mc">
-      <div class="mc-lbl">P/E×EPS FV</div>
-      <div class="mc-val">{{ summary.fv_pe }}</div>
-      <div class="mc-sub {{ 'pos' if summary.fv_pe_cheap else ('neg' if summary.fv_pe_cheap is not none else 'neu') }}">{{ summary.fv_pe_gap }}</div>
-    </div>
-    <div class="mc">
       <div class="mc-lbl">WALCL <span style="font-weight:400;color:#bbb;">주간</span></div>
       <div class="mc-val">{{ summary.walcl }}</div>
       <div class="mc-sub neu">{{ summary.walcl_date }}</div>
@@ -178,36 +147,39 @@ HTML_TEMPLATE = """
       <div class="mc-val">{{ summary.rrp }}</div>
       <div class="mc-sub neu">{{ summary.rrp_date }}</div>
     </div>
+    <div class="mc">
+      <div class="mc-lbl">S&P 500</div>
+      <div class="mc-val">{{ summary.spx_raw }}</div>
+      <div class="mc-sub neu">{{ summary.base_date }}</div>
+    </div>
   </div>
 
   <div class="chart-box">{{ chart_html | safe }}</div>
 
-  <div class="section-title">EPS / P/E 설정</div>
-  <div class="eps-box">
-    <div class="row">
-      <label>EPS (Trailing FRED 자동)</label>
-      <span style="font-family:'Courier New';font-weight:700;">{{ summary.trailing_eps_disp }}</span>
-      <span class="hint">{{ summary.trailing_eps_date }}</span>
+  <div class="section-title">계산 방법론</div>
+  <div class="method-box">
+    <h3>1. Net Liquidity</h3>
+    <div class="formula">NL = WALCL − TGA − RRP</div>
+    <div class="desc"><b>WALCL</b>: Fed 총자산 — 많을수록 시중에 돈이 많이 풀린 상태</div>
+    <div class="desc"><b>TGA 차감</b>: 재무부가 Fed에 예치한 현금 — 시장에 풀리지 않은 돈</div>
+    <div class="desc"><b>RRP 차감</b>: MMF 등이 Fed에 맡긴 역레포 잔액 — 역시 시장 밖에 있는 돈</div>
+    <div class="desc" style="margin-top:6px;">→ Michael Howell(CrossBorder Capital), Lyn Alden 등 매크로 분석가들이 대중화한 공식. Fed 유동성이 실제로 시장에 얼마나 풀려있는지 측정.</div>
+
+    <h3 style="margin-top:14px;">2. NL 회귀 공정가치 (Regression FV)</h3>
+    <div class="formula">SPX_FV = slope × NL + intercept</div>
+    <div class="desc">2000년부터 현재까지 일간 데이터로 선형회귀 적합. NL이 높을수록 SPX 공정가치도 높아지는 관계를 모델링.</div>
+    {% if model_info %}
+    <div class="model-info">
+      slope={{ model_info.slope }} &nbsp;|&nbsp; intercept={{ model_info.intercept }} &nbsp;|&nbsp; R²={{ model_info.r2 }} &nbsp;|&nbsp; 샘플={{ model_info.n }}개
     </div>
-    <div class="row">
-      <label>EPS Override (수동 입력)</label>
-      <input type="number" id="inp-eps" placeholder="{{ summary.eps_used }}" value="{{ summary.user_eps_disp }}" step="1" />
-      <span class="hint">비우면 Trailing 자동 사용</span>
-    </div>
-    <div class="row">
-      <label>P/E Ratio</label>
-      <input type="number" id="inp-pe" placeholder="21" value="{{ summary.pe_used }}" step="0.5" />
-      <span class="hint">현재 Forward P/E: ~19.9 (FactSet)</span>
-    </div>
-    <div>
-      <button class="apply-btn" onclick="applyEPS()">적용</button>
-      <button class="reset-btn" onclick="resetEPS()">초기화 (FRED 자동)</button>
-    </div>
-    <div class="eps-source">
-      현재 사용 중: EPS={{ summary.eps_used }} × P/E={{ summary.pe_used }} = FV <strong>{{ summary.fv_pe }}</strong>
-      {% if summary.eps_source == 'user' %}<span style="color:#cc0000;">[수동 입력]</span>
-      {% elif summary.eps_source == 'trailing' %}<span style="color:#2ca02c;">[FRED Trailing 자동]</span>
-      {% else %}<span style="color:#888;">[기본값]</span>{% endif %}
+    {% endif %}
+
+    <h3 style="margin-top:14px;">3. 괴리율</h3>
+    <div class="formula">괴리율 = (SPX현재가 − FV) / FV × 100 (%)</div>
+    <div class="desc">양수(+): SPX가 NL 기반 공정가치 대비 고평가 &nbsp;|&nbsp; 음수(−): 저평가</div>
+
+    <div class="warn">
+      ※ 주의: NL과 SPX의 상관관계(R²≈0.6~0.8)는 표본 기간에 의존하며, 인과관계가 아닌 상관관계입니다. 2008·2020 QE 이후 구조 변화가 반영되어 있어 절대적 FV보다는 <b>방향성·괴리 추세</b> 위주로 활용하는 것이 적합합니다.
     </div>
   </div>
 
@@ -220,9 +192,7 @@ HTML_TEMPLATE = """
     <div class="row"><span class="lbl">Net Liquidity</span><span class="val {{ 'pos' if summary.nl_chg_pos else 'neg' }}">{{ summary.nl_raw }} &nbsp;({{ summary.nl_chg }})</span></div>
     <hr class="divider">
     <div class="row"><span class="lbl">NL 회귀 공정가치</span><span class="val">{{ summary.fv_nl }}</span></div>
-    <div class="row"><span class="lbl">SPX (NL 기준)</span><span class="val {{ 'pos' if summary.fv_nl_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_nl_gap }})</span></div>
-    <div class="row"><span class="lbl">P/E×EPS 공정가치</span><span class="val">{{ summary.fv_pe }}</span></div>
-    <div class="row"><span class="lbl">SPX (P/E 기준)</span><span class="val {{ 'pos' if summary.fv_pe_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_pe_gap }})</span></div>
+    <div class="row"><span class="lbl">SPX 현재가</span><span class="val {{ 'pos' if summary.fv_nl_cheap else 'neg' }}">{{ summary.spx_raw }} &nbsp;({{ summary.fv_nl_gap }})</span></div>
   </div>
 
   <div class="section-title">최근 10일 데이터</div>
@@ -250,7 +220,7 @@ HTML_TEMPLATE = """
 
 {% endif %}
   <div class="footer">
-    Source: FRED &nbsp;|&nbsp; WALCL(주간) · WDTGAL · RRPONTSYD · SP500 · SP500EPS(분기) &nbsp;|&nbsp; 2000–present
+    Source: Federal Reserve Bank of St. Louis (FRED) &nbsp;|&nbsp; WALCL(주간) · WDTGAL · RRPONTSYD · SP500 &nbsp;|&nbsp; 2000–present
   </div>
 </div>
 </body>
@@ -286,75 +256,48 @@ def fetch_auto(series_id, start, preferred="d"):
     raise ValueError(f"{series_id}: 사용 가능한 frequency 없음")
 
 
-def fetch_trailing_eps():
-    try:
-        s = fetch_series("SP500EPS", "1990-01-01", frequency="q")
-        val = float(s.dropna().iloc[-1])
-        date = s.dropna().index[-1].strftime("%Y-%m-%d")
-        print(f"  [SP500EPS] Trailing EPS={val:.2f} ({date})")
-        return val, date
-    except Exception as e:
-        print(f"  [SP500EPS] 실패: {e}")
-        return None, None
-
-
 def build_data():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WALCL...")
     walcl_w = fetch_series("WALCL", START_DATE, frequency="w")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] WDTGAL...")
-    tga_d, _ = fetch_auto("WDTGAL", START_DATE, preferred="d")
+    tga_d, tga_freq = fetch_auto("WDTGAL", START_DATE, preferred="d")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] RRPONTSYD...")
-    rrp_d, _ = fetch_auto("RRPONTSYD", START_DATE, preferred="d")
+    rrp_d, rrp_freq = fetch_auto("RRPONTSYD", START_DATE, preferred="d")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500...")
     try:
         spx_d, _ = fetch_auto("SP500", START_DATE, preferred="d")
     except Exception:
         spx_d = pd.Series(dtype=float, name="SP500")
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] SP500EPS...")
-    trailing_eps, trailing_eps_date = fetch_trailing_eps()
 
-    df = pd.DataFrame({"TGA": tga_d, "RRP": rrp_d, "SP500": spx_d}).sort_index()
+    # TGA/RRP가 주간이면 일간 인덱스 기준으로 ffill
+    df = pd.DataFrame({"SP500": spx_d}).sort_index()
+    df["TGA"]   = tga_d.reindex(df.index, method="ffill")
+    df["RRP"]   = rrp_d.reindex(df.index, method="ffill")
     df["WALCL"] = walcl_w.reindex(df.index, method="ffill")
     df = df.dropna(subset=["TGA", "RRP", "WALCL"])
     df["NL"] = df["WALCL"] - df["TGA"] - df["RRP"]
     df["NL_DoD"] = df["NL"].diff()
 
+    # 선형회귀
     valid = df[["NL", "SP500"]].dropna()
+    model_info = None
     if len(valid) >= 10:
         x, y = valid["NL"].values, valid["SP500"].values
         slope, intercept = np.polyfit(x, y, 1)
         r2 = np.corrcoef(x, y)[0, 1] ** 2
-        print(f"  회귀 R²={r2:.3f}")
+        print(f"  회귀: slope={slope:.5f}, intercept={intercept:.1f}, R²={r2:.3f}, n={len(valid)}")
         df["FV_NL"] = slope * df["NL"] + intercept
+        model_info = {
+            "slope": f"{slope:.5f}",
+            "intercept": f"{intercept:.1f}",
+            "r2": f"{r2:.3f}",
+            "n": f"{len(valid):,}",
+        }
     else:
         df["FV_NL"] = np.nan
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 완료: {len(df)}개")
-    return df, trailing_eps, trailing_eps_date
-
-
-def get_eps_pe():
-    """EPS/PE 결정: user override > env override > FRED trailing > 기본값"""
-    user_eps = cache.get("user_eps")
-    user_pe  = cache.get("user_pe")
-
-    if user_eps and user_pe:
-        return float(user_eps), float(user_pe), "user"
-
-    trailing = cache.get("trailing_eps")
-
-    if FEPS_OVERRIDE:
-        eps = float(FEPS_OVERRIDE)
-        source = "env"
-    elif trailing:
-        eps = trailing
-        source = "trailing"
-    else:
-        eps = 220.0
-        source = "default"
-
-    pe = float(user_pe) if user_pe else (float(FPE_OVERRIDE) if FPE_OVERRIDE else 21.0)
-    return eps, pe, source
+    return df, model_info
 
 
 def fmt_val(v):
@@ -366,8 +309,6 @@ def fmt_val(v):
 def build_summary(df):
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else None
-    eps, pe, eps_source = get_eps_pe()
-    fv_pe = eps * pe
     spx = latest["SP500"] if not pd.isna(latest["SP500"]) else None
     fv_nl = latest["FV_NL"] if "FV_NL" in latest.index and not pd.isna(latest["FV_NL"]) else None
     chg = latest["NL"] - prev["NL"] if prev is not None else 0
@@ -382,15 +323,6 @@ def build_summary(df):
         fv_nl_gap = f"{'+' if gap>0 else ''}{gap:.1f}% {'고평가' if gap>0 else '저평가'}"
         fv_nl_cheap = gap < 0
 
-    fv_pe_gap = fv_pe_cheap = None
-    if spx:
-        gap2 = (spx - fv_pe) / fv_pe * 100
-        fv_pe_gap = f"{'+' if gap2>0 else ''}{gap2:.1f}% {'고평가' if gap2>0 else '저평가'}"
-        fv_pe_cheap = gap2 < 0
-
-    trailing = cache.get("trailing_eps")
-    trailing_date = cache.get("trailing_eps_date")
-
     return {
         "base_date": df.index[-1].strftime("%Y-%m-%d"),
         "nl": fmt_val(latest["NL"]), "nl_raw": f"{latest['NL']:,.0f}B",
@@ -403,13 +335,8 @@ def build_summary(df):
         "rrp_date": rrp_date.strftime("%m-%d") if rrp_date else "—",
         "spx_raw": f"{spx:,.0f}" if spx else "—",
         "fv_nl": f"{fv_nl:,.0f}" if fv_nl else "—",
-        "fv_nl_gap": fv_nl_gap or "데이터 부족", "fv_nl_cheap": fv_nl_cheap,
-        "fv_pe": f"{fv_pe:,.0f}", "fv_pe_gap": fv_pe_gap or "SPX 없음", "fv_pe_cheap": fv_pe_cheap,
-        "trailing_eps_disp": f"${trailing:.2f}" if trailing else "조회 실패",
-        "trailing_eps_date": f"({trailing_date})" if trailing_date else "",
-        "eps_used": f"{eps:.1f}", "pe_used": f"{pe:.1f}",
-        "eps_source": eps_source,
-        "user_eps_disp": f"{cache['user_eps']:.1f}" if cache.get("user_eps") else "",
+        "fv_nl_gap": fv_nl_gap or "데이터 부족",
+        "fv_nl_cheap": fv_nl_cheap,
     }
 
 
@@ -428,7 +355,9 @@ def build_table_rows(df):
             gap_pos = g < 0
         rows.append({
             "date": date.strftime("%Y-%m-%d"),
-            "walcl": f"{row['WALCL']:,.0f}", "tga": f"{row['TGA']:,.0f}", "rrp": f"{row['RRP']:,.0f}",
+            "walcl": f"{row['WALCL']:,.0f}",
+            "tga": f"{row['TGA']:,.0f}",
+            "rrp": f"{row['RRP']:,.0f}",
             "nl": f"{row['NL']:,.0f}",
             "dod": f"{'▲' if dod>=0 else '▼'}{abs(dod):,.0f}" if dod is not None else "—",
             "dod_pos": dod >= 0 if dod is not None else None,
@@ -440,21 +369,25 @@ def build_table_rows(df):
 
 
 def build_chart(df):
-    eps, pe, _ = get_eps_pe()
-    fv_pe = eps * pe
-    recession_periods = [("2001-03-01","2001-11-01"),("2007-12-01","2009-06-01"),("2020-02-01","2020-04-01")]
+    recession_periods = [
+        ("2001-03-01","2001-11-01"),
+        ("2007-12-01","2009-06-01"),
+        ("2020-02-01","2020-04-01"),
+    ]
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
         subplot_titles=("Net Liquidity · TGA · RRP — Daily (2000–present)",
-                        "S&P 500 vs Fair Value — Daily (2000–present)"),
+                        "S&P 500 vs NL Regression FV — Daily (2000–present)"),
         vertical_spacing=0.10, row_heights=[0.5, 0.5])
 
     for s, e in recession_periods:
         for row in [1, 2]:
-            fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)", layer="below", line_width=0, row=row, col=1)
+            fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)",
+                          layer="below", line_width=0, row=row, col=1)
 
     fig.add_trace(go.Scatter(x=df.index, y=df["NL"], name="Net Liquidity",
-        line=dict(color="#1f77b4", width=2), fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"), row=1, col=1)
+        line=dict(color="#1f77b4", width=2),
+        fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["TGA"], name="TGA",
         line=dict(color="#2ca02c", width=1.5, dash="dash")), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["RRP"], name="RRP",
@@ -465,9 +398,6 @@ def build_chart(df):
     if "FV_NL" in df.columns and df["FV_NL"].notna().any():
         fig.add_trace(go.Scatter(x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
             line=dict(color="#1f77b4", width=1.5)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=[fv_pe]*len(df),
-        name=f"P/E×EPS FV ({fv_pe:,.0f})",
-        line=dict(color="#d62728", width=1.5, dash="dash")), row=2, col=1)
 
     grid = dict(showgrid=True, gridcolor="rgba(204,0,0,0.15)", gridwidth=0.5, griddash="dot",
                 linecolor="#bbb", linewidth=1, showline=True, ticks="outside", tickcolor="#bbb",
@@ -476,11 +406,13 @@ def build_chart(df):
     spx_min = int(spx_vals.min() * 0.9) if len(spx_vals) else 500
     spx_max = int(spx_vals.max() * 1.05) if len(spx_vals) else 7500
 
-    fig.update_layout(height=680, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
-        font=dict(family="Arial,sans-serif", size=11, color="#333"), hovermode="x unified",
-        margin=dict(t=50, b=40, l=70, r=20),
+    fig.update_layout(
+        height=680, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
+        font=dict(family="Arial,sans-serif", size=11, color="#333"),
+        hovermode="x unified", margin=dict(t=50, b=40, l=70, r=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
-                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#ddd", borderwidth=1, font=dict(size=10)))
+                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#ddd", borderwidth=1, font=dict(size=10)),
+    )
     fig.update_xaxes(**grid)
     fig.update_yaxes(**grid, title_text="Billions USD", title_font=dict(size=10, color="#555"),
                      tickformat=",", ticksuffix="B", row=1, col=1)
@@ -492,12 +424,11 @@ def build_chart(df):
 def refresh_data():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 갱신 시작...")
     try:
-        df, trailing_eps, trailing_eps_date = build_data()
-        cache["trailing_eps"] = trailing_eps
-        cache["trailing_eps_date"] = trailing_eps_date
+        df, model_info = build_data()
         cache["summary"] = build_summary(df)
         cache["chart_html"] = build_chart(df)
         cache["table_rows"] = build_table_rows(df)
+        cache["model_info"] = model_info
         cache["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cache["error"] = None
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 갱신 완료\n")
@@ -519,36 +450,12 @@ def index():
         chart_html=cache["chart_html"], summary=cache["summary"],
         table_rows=cache["table_rows"] or [],
         updated_at=cache["updated_at"] or "—",
-        error=cache["error"], refresh_interval=REFRESH_INTERVAL)
+        error=cache["error"], refresh_interval=REFRESH_INTERVAL,
+        model_info=cache["model_info"])
 
 
 @app.route("/refresh")
 def manual_refresh():
-    threading.Thread(target=refresh_data, daemon=True).start()
-    return "ok"
-
-
-@app.route("/set_eps", methods=["POST"])
-def set_eps():
-    try:
-        data = request.get_json()
-        eps = float(data["eps"])
-        pe  = float(data["pe"])
-        if eps <= 0 or pe <= 0:
-            return jsonify({"ok": False})
-        cache["user_eps"] = eps
-        cache["user_pe"]  = pe
-        # 차트/요약 재계산 (기존 df 없으므로 다음 refresh 때 반영)
-        threading.Thread(target=refresh_data, daemon=True).start()
-        return jsonify({"ok": True})
-    except Exception:
-        return jsonify({"ok": False})
-
-
-@app.route("/reset_eps", methods=["POST"])
-def reset_eps():
-    cache["user_eps"] = None
-    cache["user_pe"]  = None
     threading.Thread(target=refresh_data, daemon=True).start()
     return "ok"
 
