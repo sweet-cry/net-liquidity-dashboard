@@ -1,0 +1,6 @@
+flask
+requests
+pandas
+plotly
+numpy
+gunicorn
