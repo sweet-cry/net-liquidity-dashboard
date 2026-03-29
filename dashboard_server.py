@@ -154,7 +154,25 @@ HTML_TEMPLATE = """
     </div>
   </div>
 
-  <div class="chart-box">{{ chart_html | safe }}</div>
+  <div style="background:#fff;border:1px solid #ddd;border-top:2px solid #cc0000;border-radius:2px;padding:10px 12px 4px;margin-bottom:0;border-bottom:none;">
+    <div style="font-size:12px;font-weight:700;color:#333;margin-bottom:6px;">Net Liquidity · TGA · RRP — Daily (2000–present)</div>
+    <div style="display:flex;gap:14px;font-size:11px;color:#444;flex-wrap:wrap;">
+      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:3px;background:#1f77b4;display:inline-block;"></span>Net Liquidity</span>
+      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;border-top:2px dashed #2ca02c;display:inline-block;"></span>TGA</span>
+      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;border-top:2px dashed #ff7f0e;display:inline-block;"></span>RRP</span>
+      <span style="margin-left:auto;font-size:10px;color:#999;">음영: 경기침체 구간</span>
+    </div>
+  </div>
+  <div class="chart-box" style="border-top:none;border-radius:0 0 2px 2px;margin-bottom:4px;">{{ chart1_html | safe }}</div>
+
+  <div style="background:#fff;border:1px solid #ddd;border-top:2px solid #cc0000;border-radius:2px;padding:10px 12px 4px;margin-bottom:0;margin-top:8px;border-bottom:none;">
+    <div style="font-size:12px;font-weight:700;color:#333;margin-bottom:6px;">S&P 500 vs NL Regression FV — Daily (2000–present)</div>
+    <div style="display:flex;gap:14px;font-size:11px;color:#444;flex-wrap:wrap;">
+      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:3px;background:#333;display:inline-block;"></span>S&P 500</span>
+      <span style="display:flex;align-items:center;gap:4px;"><span style="width:18px;height:2px;border-top:2px solid #1f77b4;display:inline-block;"></span>NL 회귀 FV</span>
+    </div>
+  </div>
+  <div class="chart-box" style="border-top:none;border-radius:0 0 2px 2px;margin-bottom:12px;">{{ chart2_html | safe }}</div>
 
   <div class="section-title">계산 방법론</div>
   <div class="method-box">
@@ -269,11 +287,11 @@ def build_data():
     except Exception:
         spx_d = pd.Series(dtype=float, name="SP500")
 
-    # TGA/RRP가 주간이면 일간 인덱스 기준으로 ffill
-    df = pd.DataFrame({"SP500": spx_d}).sort_index()
-    df["TGA"]   = tga_d.reindex(df.index, method="ffill")
+    # TGA 기준 인덱스 → 2000년부터 시작, SP500은 ffill
+    df = pd.DataFrame({"TGA": tga_d}).sort_index()
     df["RRP"]   = rrp_d.reindex(df.index, method="ffill")
     df["WALCL"] = walcl_w.reindex(df.index, method="ffill")
+    df["SP500"] = spx_d.reindex(df.index, method="ffill")
     df = df.dropna(subset=["TGA", "RRP", "WALCL"])
     df["NL"] = df["WALCL"] - df["TGA"] - df["RRP"]
     df["NL_DoD"] = df["NL"].diff()
@@ -368,57 +386,69 @@ def build_table_rows(df):
     return list(reversed(rows[-10:]))
 
 
-def build_chart(df):
+def build_chart1(df):
+    """차트1: Net Liquidity · TGA · RRP"""
     recession_periods = [
         ("2001-03-01","2001-11-01"),
         ("2007-12-01","2009-06-01"),
         ("2020-02-01","2020-04-01"),
     ]
-
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-        subplot_titles=("Net Liquidity · TGA · RRP — Daily (2000–present)",
-                        "S&P 500 vs NL Regression FV — Daily (2000–present)"),
-        vertical_spacing=0.10, row_heights=[0.5, 0.5])
-
+    fig = go.Figure()
     for s, e in recession_periods:
-        for row in [1, 2]:
-            fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)",
-                          layer="below", line_width=0, row=row, col=1)
-
+        fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)", layer="below", line_width=0)
     fig.add_trace(go.Scatter(x=df.index, y=df["NL"], name="Net Liquidity",
         line=dict(color="#1f77b4", width=2),
-        fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"), row=1, col=1)
+        fill="tozeroy", fillcolor="rgba(31,119,180,0.10)"))
     fig.add_trace(go.Scatter(x=df.index, y=df["TGA"], name="TGA",
-        line=dict(color="#2ca02c", width=1.5, dash="dash")), row=1, col=1)
+        line=dict(color="#2ca02c", width=1.5, dash="dash")))
     fig.add_trace(go.Scatter(x=df.index, y=df["RRP"], name="RRP",
-        line=dict(color="#ff7f0e", width=1.5, dash="dash")), row=1, col=1)
-
-    fig.add_trace(go.Scatter(x=df.index, y=df["SP500"], name="S&P 500",
-        line=dict(color="#333333", width=2)), row=2, col=1)
-    if "FV_NL" in df.columns and df["FV_NL"].notna().any():
-        fig.add_trace(go.Scatter(x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
-            line=dict(color="#1f77b4", width=1.5)), row=2, col=1)
-
+        line=dict(color="#ff7f0e", width=1.5, dash="dash")))
     grid = dict(showgrid=True, gridcolor="rgba(204,0,0,0.15)", gridwidth=0.5, griddash="dot",
                 linecolor="#bbb", linewidth=1, showline=True, ticks="outside", tickcolor="#bbb",
                 tickfont=dict(size=10, color="#555"))
-    spx_vals = df["SP500"].dropna()
-    spx_min = int(spx_vals.min() * 0.9) if len(spx_vals) else 500
-    spx_max = int(spx_vals.max() * 1.05) if len(spx_vals) else 7500
-
     fig.update_layout(
-        height=680, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
+        height=320, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
         font=dict(family="Arial,sans-serif", size=11, color="#333"),
-        hovermode="x unified", margin=dict(t=50, b=40, l=70, r=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
-                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#ddd", borderwidth=1, font=dict(size=10)),
+        hovermode="x unified", margin=dict(t=10, b=40, l=70, r=20),
+        showlegend=False,
     )
     fig.update_xaxes(**grid)
     fig.update_yaxes(**grid, title_text="Billions USD", title_font=dict(size=10, color="#555"),
-                     tickformat=",", ticksuffix="B", row=1, col=1)
-    fig.update_yaxes(**grid, title_text="Index Level", title_font=dict(size=10, color="#555"),
-                     tickformat=",", range=[spx_min, spx_max], row=2, col=1)
+                     tickformat=",", ticksuffix="B")
     return fig.to_html(include_plotlyjs="cdn", full_html=False, config={"displayModeBar": True})
+
+
+def build_chart2(df):
+    """차트2: S&P 500 vs NL 회귀 FV"""
+    recession_periods = [
+        ("2001-03-01","2001-11-01"),
+        ("2007-12-01","2009-06-01"),
+        ("2020-02-01","2020-04-01"),
+    ]
+    fig = go.Figure()
+    for s, e in recession_periods:
+        fig.add_vrect(x0=s, x1=e, fillcolor="rgba(180,0,0,0.07)", layer="below", line_width=0)
+    fig.add_trace(go.Scatter(x=df.index, y=df["SP500"], name="S&P 500",
+        line=dict(color="#333333", width=2)))
+    if "FV_NL" in df.columns and df["FV_NL"].notna().any():
+        fig.add_trace(go.Scatter(x=df.index, y=df["FV_NL"], name="NL 회귀 FV",
+            line=dict(color="#1f77b4", width=1.5)))
+    spx_vals = df["SP500"].dropna()
+    spx_min = int(spx_vals.min() * 0.9) if len(spx_vals) else 500
+    spx_max = int(spx_vals.max() * 1.05) if len(spx_vals) else 7500
+    grid = dict(showgrid=True, gridcolor="rgba(204,0,0,0.15)", gridwidth=0.5, griddash="dot",
+                linecolor="#bbb", linewidth=1, showline=True, ticks="outside", tickcolor="#bbb",
+                tickfont=dict(size=10, color="#555"))
+    fig.update_layout(
+        height=320, plot_bgcolor="#e8e8e8", paper_bgcolor="#ffffff",
+        font=dict(family="Arial,sans-serif", size=11, color="#333"),
+        hovermode="x unified", margin=dict(t=10, b=40, l=70, r=20),
+        showlegend=False,
+    )
+    fig.update_xaxes(**grid)
+    fig.update_yaxes(**grid, title_text="Index Level", title_font=dict(size=10, color="#555"),
+                     tickformat=",", range=[spx_min, spx_max])
+    return fig.to_html(include_plotlyjs=False, full_html=False, config={"displayModeBar": True})
 
 
 def refresh_data():
@@ -426,7 +456,8 @@ def refresh_data():
     try:
         df, model_info = build_data()
         cache["summary"] = build_summary(df)
-        cache["chart_html"] = build_chart(df)
+        cache["chart1_html"] = build_chart1(df)
+        cache["chart2_html"] = build_chart2(df)
         cache["table_rows"] = build_table_rows(df)
         cache["model_info"] = model_info
         cache["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -447,7 +478,9 @@ def background_loop():
 @app.route("/")
 def index():
     return render_template_string(HTML_TEMPLATE,
-        chart_html=cache["chart_html"], summary=cache["summary"],
+        chart1_html=cache.get("chart1_html"),
+        chart2_html=cache.get("chart2_html"),
+        summary=cache["summary"],
         table_rows=cache["table_rows"] or [],
         updated_at=cache["updated_at"] or "—",
         error=cache["error"], refresh_interval=REFRESH_INTERVAL,
