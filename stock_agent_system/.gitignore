@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+logs/
+output/daily/
+output/weekly/
+output/alerts/
+output/latest_briefing.json
+.DS_Store
